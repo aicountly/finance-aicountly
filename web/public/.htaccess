@@ -18,6 +18,15 @@
   # Never swallow Let's Encrypt validation requests.
   RewriteRule ^\.well-known/ - [L]
 
+  # Never swallow the PHP API. server-php is deployed inside this same
+  # document root at /api and routes everything below it through its own
+  # front controller (server-php/public/.htaccess -> index.php). Those
+  # deeper paths (e.g. /api/v1/auth/sso-callback) are not real files or
+  # directories, so without this the -f/-d check above falls through and
+  # this SPA fallback serves index.html instead of ever reaching the API.
+  RewriteCond %{REQUEST_URI} ^/api(/|$)
+  RewriteRule ^ - [L]
+
   RewriteRule ^ index.html [L]
 </IfModule>
 
