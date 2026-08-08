@@ -1,0 +1,252 @@
+# ---------------------------------------------------------------------------
+# Deploy Finance to cPanel Production  (https://finance.aicountly.org)
+#
+# MANUAL ONLY. The single trigger is workflow_dispatch — merging or pushing
+# never deploys. Add no push/pull_request/schedule triggers to this file.
+#
+# What it does: builds the app on the runner, then rsyncs the built dist/
+# over SSH to the cPanel document root. No source, no node_modules, and no
+# .env ever reach the server.
+# ---------------------------------------------------------------------------
+name: Deploy to cPanel Production
+
+on:
+  workflow_dispatch:
+
+# Never let two deploys to the same target overlap.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Build and deploy to Production
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # Fail before doing any work if the deploy target is not fully
+      # configured. Without this an unset secret would silently expand to an
+      # empty string, and `rsync --delete` against "user@host:/" would target
+      # the filesystem root instead of the document root.
+      - name: Validate deployment configuration
+        env:
+          SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
+          SSH_USER: ${{ secrets.PROD_SSH_USER }}
+          SSH_PRIVATE_KEY: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
+          REMOTE_ROOT: ${{ secrets.PROD_SSH_REMOTE_ROOT }}
+        run: |
+          missing=""
+          [ -n "$SSH_HOST" ]        || missing="$missing PROD_SSH_HOST"
+          [ -n "$SSH_USER" ]        || missing="$missing PROD_SSH_USER"
+          [ -n "$SSH_PRIVATE_KEY" ] || missing="$missing PROD_SSH_PRIVATE_KEY"
+          [ -n "$REMOTE_ROOT" ]     || missing="$missing PROD_SSH_REMOTE_ROOT"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing or empty required secret(s):$missing"
+            exit 1
+          fi
+
+          # A relative remote root is normal on cPanel: rsync resolves it
+          # against the SSH user's home directory, so "public_html" means
+          # /home/<user>/public_html. Both forms are accepted.
+          #
+          # What must be refused is anything that resolves to the home
+          # directory itself or climbs out of it, because the deploy runs with
+          # --delete and would take the rest of the account with it.
+          case "$REMOTE_ROOT" in
+            ''|.|./|'~'|'~/')
+              echo "::error::PROD_SSH_REMOTE_ROOT points at the home directory itself, which --delete would wipe. Use the document root instead, e.g. public_html"
+              exit 1
+              ;;
+            /|/home|/home/|/root|/var|/etc|/usr|/bin|/sbin|/boot|/opt)
+              echo "::error::PROD_SSH_REMOTE_ROOT is a system directory and is unsafe for a --delete deploy"
+              exit 1
+              ;;
+            ..|../*|*/../*|*/..)
+              echo "::error::PROD_SSH_REMOTE_ROOT must not contain a parent-directory reference"
+              exit 1
+              ;;
+          esac
+
+          case "$REMOTE_ROOT" in
+            /*) echo "Deploy target validated (absolute path)." ;;
+            *)  echo "Deploy target validated ('$REMOTE_ROOT', relative to the SSH user's home directory)." ;;
+          esac
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        env:
+          # Build-time config. Vite inlines VITE_* into the bundle, so these
+          # are public values — never put a secret here.
+          # Set PROD_API_BASE_URL under Settings > Secrets and variables >
+          # Actions > Variables. The placeholder fallback is deliberately
+          # invalid so a missing variable fails loudly instead of silently
+          # pointing the app at the wrong backend.
+          VITE_API_BASE_URL: ${{ vars.PROD_API_BASE_URL || 'https://REPLACE-ME.aicountly.com/api' }}
+          VITE_APP_NAME: Finance
+          VITE_APP_ENV: production
+        run: |
+          if [ "$VITE_API_BASE_URL" = "https://REPLACE-ME.aicountly.com/api" ]; then
+            echo "::warning::Repository variable PROD_API_BASE_URL is not set; building against a placeholder API URL."
+          fi
+          npm run build
+
+      - name: Verify build output
+        run: |
+          test -f dist/index.html || { echo "::error::dist/index.html missing — build produced no output"; exit 1; }
+          test -f dist/.htaccess || echo "::warning::dist/.htaccess missing — SPA routes may 404 on refresh"
+          # Belt and braces: a .env must never be shipped.
+          if find dist -name '.env*' ! -name '.env.example' | grep -q .; then
+            echo "::error::an .env file ended up in dist/ — refusing to deploy"
+            exit 1
+          fi
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
+          SSH_PORT: ${{ secrets.PROD_SSH_PORT }}
+          SSH_USER: ${{ secrets.PROD_SSH_USER }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          # A truncated paste or CRLF line endings produce a key file that ssh
+          # silently ignores, which then surfaces only as "Permission denied
+          # (publickey)". Catch it here where the cause is still obvious.
+          sed -i 's/\r$//' ~/.ssh/deploy_key
+          if ! ssh-keygen -y -f ~/.ssh/deploy_key > ~/.ssh/deploy_key.pub 2>/dev/null; then
+            echo "::error::PROD_SSH_PRIVATE_KEY is not a usable OpenSSH private key. Copy the whole file, including the BEGIN and END lines."
+            exit 1
+          fi
+
+          # Fingerprint and public key are not secret, and they are what you
+          # compare against the server to confirm the right key is authorised.
+          echo "Deploy key: $(ssh-keygen -l -f ~/.ssh/deploy_key)"
+          echo "Public key that must appear in the cPanel user's ~/.ssh/authorized_keys:"
+          sed 's/^/    /' ~/.ssh/deploy_key.pub
+
+          # Pin the host key so deploys fail closed rather than trusting
+          # whatever answers on that address.
+          if ! ssh-keyscan -p "${SSH_PORT:-22}" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/tmp/keyscan.err; then
+            echo "::error::ssh-keyscan could not reach the host on the configured port."
+            sed 's/^/    /' /tmp/keyscan.err
+            exit 1
+          fi
+          if [ ! -s ~/.ssh/known_hosts ]; then
+            echo "::error::The host returned no SSH host key. Check PROD_SSH_HOST and PROD_SSH_PORT."
+            exit 1
+          fi
+          chmod 600 ~/.ssh/known_hosts
+
+          # Older cPanel / CloudLinux hosts offer only RSA with SHA-1, which
+          # OpenSSH 8.8+ (what the runner ships) refuses by default. Without
+          # these two options such a server rejects a perfectly valid key with
+          # exactly the same "Permission denied (publickey)" message.
+          cat > ~/.ssh/config <<CFG
+          Host deploy-target
+            HostName $SSH_HOST
+            User $SSH_USER
+            Port ${SSH_PORT:-22}
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            PubkeyAcceptedAlgorithms +ssh-rsa
+            HostKeyAlgorithms +ssh-rsa
+            BatchMode yes
+          CFG
+          chmod 600 ~/.ssh/config
+
+      # Authenticate before touching the document root, so a key problem is
+      # reported as a key problem rather than as an rsync exit code.
+      - name: Verify SSH authentication
+        run: |
+          if ssh deploy-target 'echo connected' > /tmp/ssh.out 2>/tmp/ssh.err; then
+            echo "SSH authentication succeeded."
+            exit 0
+          fi
+
+          echo "::error::SSH authentication to the cPanel host failed. The server refused the deploy key."
+          echo "--- ssh output ---"
+          sed 's/^/    /' /tmp/ssh.err
+
+          cat <<'HINT'
+
+          Most common causes, in the order worth checking:
+
+            1. The public key is not authorised for this cPanel user.
+               cPanel imports and authorises as two separate actions: after
+               importing, open SSH Access > Manage SSH Keys and click Manage,
+               then Authorize. An imported-but-unauthorised key fails exactly
+               like this.
+
+            2. The public key printed in the previous step does not match the
+               one in the cPanel user's ~/.ssh/authorized_keys. Compare them.
+
+            3. PROD_SSH_USER is not the cPanel account username.
+
+            4. The private key stored in the secret belongs to a different key
+               pair than the public key on the server.
+
+          HINT
+          exit 1
+
+      - name: Deploy via rsync
+        env:
+          REMOTE_ROOT: ${{ secrets.PROD_SSH_REMOTE_ROOT }}
+        run: |
+          # Connection settings come from ~/.ssh/config (host deploy-target),
+          # written in the Configure SSH step.
+          #
+          # Trailing slash on dist/ copies the *contents* into REMOTE_ROOT.
+          #
+          # --delete keeps the docroot free of files removed from the build.
+          # The excludes below protect paths cPanel owns that are not part of
+          # our build and must survive a deploy:
+          #   .env         — server-side env file, if one is ever placed there
+          #   .well-known/ — Let's Encrypt / AutoSSL validation; deleting it
+          #                  breaks certificate renewal
+          #   cgi-bin/     — cPanel-managed, present in every docroot
+          #   .git*        — never publish repository metadata
+          rsync -avz --delete \
+            --exclude='.env' \
+            --exclude='.env.*' \
+            --exclude='.git*' \
+            --exclude='.well-known/' \
+            --exclude='cgi-bin/' \
+            --chmod=D755,F644 \
+            -e ssh \
+            dist/ "deploy-target:$REMOTE_ROOT/"
+
+      - name: Clean up SSH credentials
+        if: always()
+        run: rm -f ~/.ssh/deploy_key ~/.ssh/deploy_key.pub ~/.ssh/config
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Production deploy"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Target | https://finance.aicountly.org |"
+            echo "| Commit | \`${GITHUB_SHA:0:7}\` |"
+            echo "| Ref | \`${GITHUB_REF_NAME}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
