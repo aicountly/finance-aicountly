@@ -186,6 +186,18 @@ jobs:
           echo "--- ssh output ---"
           sed 's/^/    /' /tmp/ssh.err
 
+          # The server's half of the exchange is the only thing that separates
+          # "key is not authorised" from "server cannot use this key type".
+          # They produce an identical Permission denied without it.
+          ssh -vvv deploy-target 'true' >/dev/null 2>/tmp/ssh.verbose || true
+
+          echo "--- server version and key negotiation ---"
+          grep -iE 'remote software version|remote protocol version|Offering public key|Server accepts key|send_pubkey_test|Authentications that can continue|no mutual signature|Unable to negotiate' \
+            /tmp/ssh.verbose | sed 's/^/    /' || echo "    (no negotiation detail captured)"
+
+          echo "--- host key types this server published ---"
+          awk '{print $2}' ~/.ssh/known_hosts | sort -u | sed 's/^/    /'
+
           cat <<'HINT'
 
           Most common causes, in the order worth checking:
@@ -196,13 +208,25 @@ jobs:
                then Authorize. An imported-but-unauthorised key fails exactly
                like this.
 
-            2. The public key printed in the previous step does not match the
-               one in the cPanel user's ~/.ssh/authorized_keys. Compare them.
+            2. The server is too old to understand the key type. Look for the
+               remote software version above: OpenSSH below 6.5 has no Ed25519
+               support at all, so it ignores an Ed25519 key and reports this
+               same error. Generate an RSA key instead (ssh-keygen -t rsa -b
+               4096), authorise that, and store it in the secret. cPanel's own
+               key generator defaults to RSA for this reason.
 
-            3. PROD_SSH_USER is not the cPanel account username.
+            3. The public key printed in the Configure SSH step does not match
+               the one in the cPanel user's ~/.ssh/authorized_keys. Compare
+               them character for character.
 
-            4. The private key stored in the secret belongs to a different key
+            4. PROD_SSH_USER is not the cPanel account username.
+
+            5. The private key stored in the secret belongs to a different key
                pair than the public key on the server.
+
+            6. Permissions on the server: ~/.ssh must be 700 and
+               ~/.ssh/authorized_keys 600, owned by the account. sshd silently
+               refuses keys when these are too open.
 
           HINT
           exit 1
