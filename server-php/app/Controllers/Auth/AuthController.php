@@ -39,7 +39,7 @@ class AuthController extends BaseController
 
         $data = $this->console->exchangeLaunchToken($token);
         if (!$this->isActiveSession($data)) {
-            $this->redirectToFrontend(['sso_error' => 'sso_failed']);
+            $this->redirectToFrontend(['sso_error' => $this->classifyExchangeFailure()]);
         }
 
         $jwt = $this->issueToken($data);
@@ -104,6 +104,26 @@ class AuthController extends BaseController
         }
 
         return !empty($introspectData['active']) || !empty($introspectData['global_superadmin']);
+    }
+
+    /**
+     * Turns the last Console request's HTTP status into a specific
+     * `sso_error` reason so the frontend (and whoever is debugging a failed
+     * sign-in) can tell an expired token apart from a missing grant apart
+     * from Console being unreachable, instead of one opaque "sso_failed".
+     */
+    private function classifyExchangeFailure(): string
+    {
+        $status = $this->console->lastErrorStatus();
+
+        return match (true) {
+            $status === null => 'sso_failed',
+            $status === 0 => 'console_unreachable',
+            $status === 401 => 'invalid_or_expired_token',
+            $status === 403 => 'no_finance_access',
+            $status >= 500 => 'console_unreachable',
+            default => 'sso_failed',
+        };
     }
 
     /** @param array<string,mixed> $introspectData */

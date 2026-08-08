@@ -11,6 +11,19 @@ function stripAuthParamsFromUrl(): void {
   window.history.replaceState({}, '', url.toString())
 }
 
+// Mirrors AuthController::classifyExchangeFailure() on the server-php side —
+// keep both in sync when adding a new sso_error reason.
+const SSO_ERROR_MESSAGES: Record<string, string> = {
+  missing_token: 'Console did not send a sign-in token. Open Finance from the Console App Launcher instead of visiting this link directly.',
+  invalid_or_expired_token: 'Your Console sign-in link expired before it was used. Go back to Console and click Finance again.',
+  no_finance_access: 'Your Console account does not have Finance access. Ask a Console admin to grant it under Access Management → Controller App Access.',
+  console_unreachable: 'Could not reach Console to verify your sign-in. Check your connection and try again in a moment.',
+}
+
+function ssoErrorMessage(code: string): string {
+  return SSO_ERROR_MESSAGES[code] || 'Could not sign you in via Console. Ask an admin to check your Finance access grant.'
+}
+
 /**
  * Finance has no local login form. On mount this either:
  *  1. Picks up the one-time token the sso-callback redirect left in the URL
@@ -37,7 +50,7 @@ export function useFinanceAuth() {
       if (ssoError) {
         stripAuthParamsFromUrl()
         if (!cancelled) {
-          setError('Could not sign you in via Console. Ask an admin to check your Finance access grant.')
+          setError(ssoErrorMessage(ssoError))
           setLoading(false)
         }
         return

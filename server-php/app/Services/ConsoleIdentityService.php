@@ -11,9 +11,32 @@ class ConsoleIdentityService
 {
     private const COOKIE_NAME = 'aicountly_controller_token';
 
+    /** HTTP status of the last failed requestJson() call, or null on success/no request yet. */
+    private ?int $lastErrorStatus = null;
+
+    /** Console's error message for the last failed requestJson() call. */
+    private ?string $lastErrorMessage = null;
+
     public static function cookieName(): string
     {
         return self::COOKIE_NAME;
+    }
+
+    /**
+     * Status of the most recent failed exchange/introspect call: the
+     * upstream HTTP status Console returned (0 if Console was unreachable),
+     * or null if the last call succeeded. Lets the caller distinguish an
+     * expired token from "no Finance grant" from "Console is down" instead
+     * of collapsing every failure into one generic error.
+     */
+    public function lastErrorStatus(): ?int
+    {
+        return $this->lastErrorStatus;
+    }
+
+    public function lastErrorMessage(): ?string
+    {
+        return $this->lastErrorMessage;
     }
 
     public function exchangeLaunchToken(string $token): ?array
@@ -57,11 +80,17 @@ class ConsoleIdentityService
 
     private function requestJson(string $path, array $payload = [], array $headers = [], string $method = 'POST'): ?array
     {
+        $this->lastErrorStatus  = null;
+        $this->lastErrorMessage = null;
+
         $apiBase = $this->resolveConsoleApiBase();
         $method  = strtoupper($method);
 
         $ch = curl_init($apiBase . $path);
         if ($ch === false) {
+            $this->lastErrorStatus  = 0;
+            $this->lastErrorMessage = 'Could not initialise request to Console.';
+
             return null;
         }
 
@@ -83,18 +112,34 @@ class ConsoleIdentityService
 
         curl_setopt_array($ch, $options);
 
-        $raw    = curl_exec($ch);
-        $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $raw     = curl_exec($ch);
+        $status  = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlErr = curl_error($ch);
         curl_close($ch);
 
-        if ($raw === false || $status < 200 || $status >= 300) {
-            error_log('Console identity request failed HTTP ' . $status . ' for ' . $path);
+        if ($raw === false) {
+            error_log('Console identity request failed to connect for ' . $path . ': ' . $curlErr);
+            $this->lastErrorStatus  = 0;
+            $this->lastErrorMessage = $curlErr !== '' ? $curlErr : 'Could not reach Console.';
 
             return null;
         }
 
         $decoded = json_decode($raw, true);
+        $message = is_array($decoded) ? (string) ($decoded['message'] ?? '') : '';
+
+        if ($status < 200 || $status >= 300) {
+            error_log('Console identity request failed HTTP ' . $status . ' for ' . $path . ($message !== '' ? ': ' . $message : ''));
+            $this->lastErrorStatus  = $status;
+            $this->lastErrorMessage = $message !== '' ? $message : 'Console request failed.';
+
+            return null;
+        }
+
         if (!is_array($decoded) || empty($decoded['success']) || !is_array($decoded['data'] ?? null)) {
+            $this->lastErrorStatus  = $status;
+            $this->lastErrorMessage = $message !== '' ? $message : 'Console returned an unexpected response.';
+
             return null;
         }
 
