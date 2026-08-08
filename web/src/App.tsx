@@ -1,22 +1,24 @@
 import './App.css'
-
-const appName = import.meta.env.VITE_APP_NAME ?? 'Finance'
-const appEnv = import.meta.env.VITE_APP_ENV ?? 'local'
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '(not configured)'
+import { useFinanceAuth } from './hooks/useFinanceAuth'
+import { SignInPrompt } from './components/SignInPrompt'
+import { Dashboard } from './components/Dashboard'
 
 function App() {
-  return (
-    <main className="app">
-      <h1>{appName}</h1>
-      <p className="tagline">Aicountly</p>
-      <dl className="meta">
-        <dt>Environment</dt>
-        <dd>{appEnv}</dd>
-        <dt>API</dt>
-        <dd>{apiBaseUrl}</dd>
-      </dl>
-    </main>
-  )
+  const { user, loading, error, signOut } = useFinanceAuth()
+
+  if (loading) {
+    return (
+      <main className="auth-screen">
+        <p className="muted">Signing you in…</p>
+      </main>
+    )
+  }
+
+  if (!user) {
+    return <SignInPrompt error={error} />
+  }
+
+  return <Dashboard user={user} onSignOut={signOut} />
 }
 
 export default App

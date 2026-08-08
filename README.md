@@ -27,8 +27,18 @@ cp ../.env.example ../.env   # then set VITE_API_BASE_URL
 npm run dev
 ```
 
-See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for how the API's `.env` and
-database settings work — they behave differently from the React variables.
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for how the API's `.env` works —
+it behaves differently from the React variables.
+
+## Sign-in (Console SSO)
+
+Finance has no login form of its own. `console.aicountly.org` is the identity
+provider for all Top Controller Apps — a user clicks **Finance** from
+Console's App Launcher, is redirected through `server-php`'s
+`/v1/auth/sso-callback`, and lands on the Finance Dashboard already signed
+in. See `console-react-app`'s `AUTH_INTEGRATION.md` for the full contract and
+`server-php/.env.example` for the required `CONSOLE_API_URL` /
+`CONTROLLER_APP_CODE` / `JWT_SECRET` settings.
 
 | Script | Purpose |
 | --- | --- |
@@ -48,6 +58,8 @@ template. Copy it and fill in real values locally.
 | `VITE_API_BASE_URL` | The endpoint this build actually uses |
 | `VITE_APP_NAME` | Display name shown in the UI |
 | `VITE_APP_ENV` | `local` or `production` |
+| `VITE_CONSOLE_URL` | Console web app (defaults to `https://console.aicountly.org`) |
+| `VITE_CONSOLE_API_URL` | Console API (defaults to `https://console.aicountly.org/api`) |
 
 Only `VITE_`-prefixed variables reach the browser bundle, and Vite inlines them
 at build time, so **treat every one of them as public**. Never put a secret,

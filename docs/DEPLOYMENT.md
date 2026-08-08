@@ -50,31 +50,34 @@ public to anyone who views the page source.
 PHP reads its `.env` on **every request**. So the API's `.env` belongs on the
 server, and only on the server.
 
-Create it once by hand — cPanel File Manager or SSH — at `<remote root>/api/.env`:
+Finance keeps no database of its own — `console.aicountly.org` is the sole
+identity provider (see [Sign-in (Console SSO)](../README.md#sign-in-console-sso)),
+so there is no `DB_*` block to configure here, unlike a typical portal.
+
+Create the `.env` once by hand — cPanel File Manager or SSH — at
+`<remote root>/api/.env`:
 
 ```
-DB_HOST=localhost
-DB_NAME=<cpaneluser>_<dbname>
-DB_USER=<cpaneluser>_<dbuser>
-DB_PASS=<password>
 APP_ENV=production
+BASE_URL=https://finance.aicountly.org/api
+FRONTEND_URL=https://finance.aicountly.org
+
+CONSOLE_API_URL=https://console.aicountly.org/api
+CONTROLLER_APP_CODE=finance
+
+JWT_SECRET=<long random value, different from Console's JWT_SECRET>
+TOKEN_TTL_HOURS=8
+
+CORS_ORIGINS=https://finance.aicountly.org
 ```
 
 It is never committed and never uploaded: `.gitignore` excludes it, and both
 rsync steps pass `--exclude='.env'` so a `--delete` deploy leaves the
 server-side file untouched.
 
-### Database on cPanel
-
-Create the database and user under **MySQL Databases**. cPanel prefixes both
-with the account name, so a database entered as `app` becomes
-`<cpaneluser>_app` — use the full prefixed names in `.env`.
-
-After creating the user, **add it to the database and grant ALL PRIVILEGES**. A
-user that exists but was never attached to the database is a common cause of a
-connection failing with no obvious reason.
-
-`DB_HOST` is `localhost` on cPanel; the database is on the same machine.
+Console must also list `https://finance.aicountly.org` in its own
+`CORS_ORIGINS` (server-php/.env on the Console host) for the direct-visit
+session check (`POST /v1/auth/console-session`) to succeed from the browser.
 
 ### Protecting the API's .env over HTTP
 
