@@ -4,7 +4,7 @@ export function SignInPrompt({ error }: { error?: string }) {
   return (
     <main className="auth-screen">
       <div className="auth-card">
-        <h1>APS Finance</h1>
+        <h1>Finance</h1>
         <p className="tagline">Aicountly</p>
         {error ? <p className="auth-error">{error}</p> : null}
         <p className="auth-copy">

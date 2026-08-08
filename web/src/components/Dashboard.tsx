@@ -20,7 +20,7 @@ export function Dashboard({ user, onSignOut }: { user: FinanceUser; onSignOut: (
   return (
     <div className="shell">
       <aside className="sidebar">
-        <div className="brand">APS Finance</div>
+        <div className="brand">Finance</div>
         <nav className="nav">
           <span className="nav-item nav-item-active">Dashboard</span>
         </nav>
