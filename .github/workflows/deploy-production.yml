@@ -84,8 +84,10 @@ jobs:
         with:
           node-version: '22'
           cache: npm
+          cache-dependency-path: web/package-lock.json
 
       - name: Install dependencies
+        working-directory: web
         run: npm ci
 
       - name: Build
@@ -99,6 +101,7 @@ jobs:
           VITE_API_BASE_URL: ${{ vars.PROD_API_BASE_URL || 'https://REPLACE-ME.aicountly.com/api' }}
           VITE_APP_NAME: Finance
           VITE_APP_ENV: production
+        working-directory: web
         run: |
           if [ "$VITE_API_BASE_URL" = "https://REPLACE-ME.aicountly.com/api" ]; then
             echo "::warning::Repository variable PROD_API_BASE_URL is not set; building against a placeholder API URL."
@@ -107,12 +110,21 @@ jobs:
 
       - name: Verify build output
         run: |
-          test -f dist/index.html || { echo "::error::dist/index.html missing — build produced no output"; exit 1; }
-          test -f dist/.htaccess || echo "::warning::dist/.htaccess missing — SPA routes may 404 on refresh"
+          test -f web/dist/index.html || { echo "::error::web/dist/index.html missing — build produced no output"; exit 1; }
+          test -f web/dist/.htaccess || echo "::warning::web/dist/.htaccess missing — SPA routes may 404 on refresh"
           # Belt and braces: a .env must never be shipped.
-          if find dist -name '.env*' ! -name '.env.example' | grep -q .; then
-            echo "::error::an .env file ended up in dist/ — refusing to deploy"
+          if find web/dist -name '.env*' ! -name '.env.example' | grep -q .; then
+            echo "::error::an .env file ended up in web/dist — refusing to deploy"
             exit 1
+          fi
+          if [ -d server-php ]; then
+            if find server-php -name '.env' | grep -q .; then
+              echo "::error::server-php contains a committed .env — refusing to deploy. The API .env belongs on the server only."
+              exit 1
+            fi
+            echo "server-php present — it will be deployed to the api folder."
+          else
+            echo "::notice::No server-php directory in this repository; only the web build will be deployed."
           fi
 
       - name: Configure SSH
@@ -231,24 +243,28 @@ jobs:
           HINT
           exit 1
 
-      - name: Deploy via rsync
+      - name: Deploy web build to the document root
         env:
           REMOTE_ROOT: ${{ secrets.PROD_SSH_REMOTE_ROOT }}
         run: |
           # Connection settings come from ~/.ssh/config (host deploy-target),
           # written in the Configure SSH step.
           #
-          # Trailing slash on dist/ copies the *contents* into REMOTE_ROOT.
+          # Trailing slash on web/dist/ copies the *contents* into REMOTE_ROOT.
           #
           # --delete keeps the docroot free of files removed from the build.
-          # The excludes below protect paths cPanel owns that are not part of
-          # our build and must survive a deploy:
-          #   .env         — server-side env file, if one is ever placed there
+          # The excludes below protect paths that are not part of the web build
+          # and must survive a deploy:
+          #   api/         — the PHP backend lives inside the document root and
+          #                  is deployed by the next step. Without this exclude
+          #                  every web deploy would delete the entire API.
+          #   .env         — server-side env file, if one is placed there
           #   .well-known/ — Let's Encrypt / AutoSSL validation; deleting it
           #                  breaks certificate renewal
           #   cgi-bin/     — cPanel-managed, present in every docroot
           #   .git*        — never publish repository metadata
           rsync -avz --delete \
+            --exclude='api/' \
             --exclude='.env' \
             --exclude='.env.*' \
             --exclude='.git*' \
@@ -256,7 +272,27 @@ jobs:
             --exclude='cgi-bin/' \
             --chmod=D755,F644 \
             -e ssh \
-            dist/ "deploy-target:$REMOTE_ROOT/"
+            web/dist/ "deploy-target:$REMOTE_ROOT/"
+
+      - name: Deploy server-php to the api folder
+        if: hashFiles('server-php/**') != ''
+        env:
+          REMOTE_ROOT: ${{ secrets.PROD_SSH_REMOTE_ROOT }}
+        run: |
+          # The API's .env is created once by hand on the server and read at
+          # runtime on every request, unlike the web build. It must never be
+          # uploaded and must never be deleted, hence the excludes below
+          # combined with --delete.
+          rsync -avz --delete \
+            --exclude='.env' \
+            --exclude='.env.*' \
+            --exclude='.git*' \
+            --chmod=D755,F644 \
+            -e ssh \
+            server-php/ "deploy-target:$REMOTE_ROOT/api/"
+
+          echo "Deployed server-php to \$REMOTE_ROOT/api/"
+          echo "::notice::If this is the first API deploy, create api/.env on the server with the database credentials — it is never uploaded."
 
       - name: Clean up SSH credentials
         if: always()
