@@ -60,12 +60,22 @@ class AuthController extends BaseController
         $consoleToken = isset($_COOKIE[$cookieName]) ? trim((string) $_COOKIE[$cookieName]) : '';
 
         if ($consoleToken === '') {
-            json_success(['active' => false], 'No Console session found.');
+            json_success(
+                ['active' => false, 'reason' => 'no_console_session'],
+                'No Console session found.',
+            );
         }
 
         $data = $this->console->introspectSession($consoleToken);
         if (!$this->isActiveSession($data)) {
-            json_success(['active' => false], 'No active Console session.');
+            $reason = $this->classifyIntrospectFailure($data);
+
+            json_success(
+                ['active' => false, 'reason' => $reason],
+                $reason === 'no_finance_access'
+                    ? 'Signed in to Console, but this account has no Finance access.'
+                    : 'No active Console session.',
+            );
         }
 
         json_success([
@@ -123,6 +133,33 @@ class AuthController extends BaseController
             $status === 403 => 'no_finance_access',
             $status >= 500 => 'console_unreachable',
             default => 'sso_failed',
+        };
+    }
+
+    /**
+     * Why the shared-cookie check did not produce a Finance session.
+     *
+     * The frontend acts on this: only `no_console_session` may bounce the
+     * browser to the Console login form. Redirecting on `no_finance_access`
+     * would loop forever, because Console sees an authenticated user and
+     * sends them straight back here.
+     *
+     * @param array<string,mixed>|null $introspectData
+     */
+    private function classifyIntrospectFailure(?array $introspectData): string
+    {
+        // Console answered 200 with a user but active=false → the session is
+        // real, the Finance grant is not.
+        if ($introspectData !== null && !empty($introspectData['user'])) {
+            return 'no_finance_access';
+        }
+
+        $status = $this->console->lastErrorStatus();
+
+        return match (true) {
+            $status === 0 => 'console_unreachable',
+            $status !== null && $status >= 500 => 'console_unreachable',
+            default => 'no_console_session',
         };
     }
 

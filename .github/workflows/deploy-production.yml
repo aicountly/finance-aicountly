@@ -94,18 +94,18 @@ jobs:
         env:
           # Build-time config. Vite inlines VITE_* into the bundle, so these
           # are public values — never put a secret here.
-          # Set PROD_API_BASE_URL under Settings > Secrets and variables >
-          # Actions > Variables. The placeholder fallback is deliberately
-          # invalid so a missing variable fails loudly instead of silently
-          # pointing the app at the wrong backend.
-          VITE_API_BASE_URL: ${{ vars.PROD_API_BASE_URL || 'https://REPLACE-ME.aicountly.com/api' }}
+          # The next step deploys server-php into <docroot>/api on this same
+          # host, so the API is same-origin and "/api" is the correct default.
+          # A same-origin base also keeps the shared .aicountly.org SSO cookie
+          # first-party. Only set the PROD_API_BASE_URL repository variable
+          # (Settings > Secrets and variables > Actions > Variables) if the
+          # API is ever moved to another host.
+          VITE_API_BASE_URL: ${{ vars.PROD_API_BASE_URL || '/api' }}
           VITE_APP_NAME: Finance
           VITE_APP_ENV: production
         working-directory: web
         run: |
-          if [ "$VITE_API_BASE_URL" = "https://REPLACE-ME.aicountly.com/api" ]; then
-            echo "::warning::Repository variable PROD_API_BASE_URL is not set; building against a placeholder API URL."
-          fi
+          echo "Building against API base URL: $VITE_API_BASE_URL"
           npm run build
 
       - name: Verify build output
@@ -122,6 +122,13 @@ jobs:
               echo "::error::server-php contains a committed .env — refusing to deploy. The API .env belongs on the server only."
               exit 1
             fi
+            # This becomes <docroot>/api/.htaccess and is what routes /api/*
+            # to the PHP front controller. Without it every API request —
+            # including Console's SSO callback — is served the SPA instead.
+            test -f server-php/.htaccess || {
+              echo "::error::server-php/.htaccess missing — /api requests would fall through to the SPA fallback and SSO login would break"
+              exit 1
+            }
             echo "server-php present — it will be deployed to the api folder."
           else
             echo "::notice::No server-php directory in this repository; only the web build will be deployed."

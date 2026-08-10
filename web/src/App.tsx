@@ -4,7 +4,15 @@ import { SignInPrompt } from './components/SignInPrompt'
 import { Dashboard } from './components/Dashboard'
 
 function App() {
-  const { user, loading, error, signOut } = useFinanceAuth()
+  const { user, loading, redirecting, error, signOut } = useFinanceAuth()
+
+  if (redirecting) {
+    return (
+      <main className="auth-screen">
+        <p className="muted">Redirecting to Console…</p>
+      </main>
+    )
+  }
 
   if (loading) {
     return (

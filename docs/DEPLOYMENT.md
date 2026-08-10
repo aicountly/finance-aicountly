@@ -42,6 +42,12 @@ from disk**. Putting a `.env` in the document root has no effect.
 To change a frontend value: update the repository *variable*
 `PROD_API_BASE_URL`, then re-run the workflow. The rebuild applies it.
 
+`PROD_API_BASE_URL` is optional and normally unset. The API is deployed into
+this same document root at `/api`, so the build defaults to the relative
+`/api` — which needs no CORS grant and keeps the shared `.aicountly.org` SSO
+cookie first-party. Set the variable only if the API is ever moved to a
+different host, and add that host to Console's `CORS_ORIGINS` if you do.
+
 Never put a secret in a `VITE_` variable — anything inlined into the bundle is
 public to anyone who views the page source.
 
@@ -79,11 +85,26 @@ Console must also list `https://finance.aicountly.org` in its own
 `CORS_ORIGINS` (server-php/.env on the Console host) for the direct-visit
 session check (`POST /v1/auth/console-session`) to succeed from the browser.
 
-### Protecting the API's .env over HTTP
+### api/.htaccess — the file the whole API depends on
 
-Because `api/` sits inside the document root, `.env` would be fetchable at
-`https://finance.aicountly.org/api/.env` unless Apache is told otherwise. `server-php`
-should ship an `.htaccess` denying dotfiles:
+`server-php/.htaccess` is rsynced to `<remote root>/api/.htaccess`, and it is
+what routes `/api/v1/...` to `public/index.php`. Those paths match no file on
+disk, and mod_rewrite's per-directory rules are **not** inherited from the
+document root, so without this file every API request falls through to the
+SPA's history fallback and is answered with `index.html`. That is invisible
+for a `fetch()` (it just fails to parse) and very visible for Console's SSO
+callback: the browser stops on
+`https://finance.aicountly.org/api/v1/auth/sso-callback` showing the Finance
+sign-in page, and nobody can log in. The deploy workflow refuses to run if
+the file is missing.
+
+It also re-exposes the `Authorization` header, which Apache drops when it
+rewrites to a front controller — without that, every `Bearer` request
+(`GET /api/v1/auth/me`) would 401.
+
+Finally, because `api/` sits inside the document root, `.env` would be
+fetchable at `https://finance.aicountly.org/api/.env` unless Apache is told
+otherwise, so the same file denies dotfiles:
 
 ```apache
 RedirectMatch 404 /\\.(?!well-known)

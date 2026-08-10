@@ -15,6 +15,16 @@ class BaseController
     protected array $params = [];
 
     /**
+     * Declared explicitly so subclasses can open with the conventional
+     * `parent::__construct()`. PHP raises `Error: Cannot call constructor`
+     * when a child calls a parent constructor that does not exist, which
+     * turned every request through AuthController into a 500.
+     */
+    public function __construct()
+    {
+    }
+
+    /**
      * Read and cache the JSON request body.
      *
      * @return array<string,mixed>

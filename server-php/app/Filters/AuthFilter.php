@@ -14,11 +14,13 @@ class AuthFilter
 {
     public static function getAuthorizationHeader(): string
     {
-        if (!empty($_SERVER['HTTP_AUTHORIZATION'])) {
-            return (string) $_SERVER['HTTP_AUTHORIZATION'];
-        }
-        if (!empty($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])) {
-            return (string) $_SERVER['REDIRECT_HTTP_AUTHORIZATION'];
+        // Apache hides the header from PHP when it rewrites to the front
+        // controller. .htaccess re-exposes it as an env var, and each rewrite
+        // hop prefixes another REDIRECT_, so accept any depth of nesting.
+        foreach ($_SERVER as $key => $value) {
+            if (is_string($key) && preg_match('/^(REDIRECT_)*HTTP_AUTHORIZATION$/', $key) && !empty($value)) {
+                return (string) $value;
+            }
         }
         if (function_exists('apache_request_headers')) {
             foreach (apache_request_headers() as $key => $value) {

@@ -16,6 +16,10 @@ function roleLabel(user: FinanceUser): string {
   return user.role || 'Member'
 }
 
+function displayName(user: FinanceUser): string {
+  return user.name?.trim() || user.email
+}
+
 export function Dashboard({ user, onSignOut }: { user: FinanceUser; onSignOut: () => void }) {
   return (
     <div className="shell">
@@ -27,21 +31,23 @@ export function Dashboard({ user, onSignOut }: { user: FinanceUser; onSignOut: (
         <div className="sidebar-user">
           <div className="sidebar-user-email">{user.email}</div>
           <div className="sidebar-user-role">{roleLabel(user)}</div>
-          <button type="button" className="button button-outline" onClick={onSignOut}>
-            Sign out
-          </button>
         </div>
       </aside>
 
       <div className="main">
         <header className="topbar">
-          <div className="topbar-title">Dashboard</div>
-          <div className="user-chip">
-            <span className="avatar">{initials(user)}</span>
-            <span className="user-chip-text">
-              <span className="user-chip-name">{user.name || user.email}</span>
-              <span className="user-chip-role">{roleLabel(user)}</span>
-            </span>
+          <div className="topbar-title">Finance</div>
+          <div className="topbar-actions">
+            <div className="user-chip">
+              <span className="avatar">{initials(user)}</span>
+              <span className="user-chip-text">
+                <span className="user-chip-name">{displayName(user)}</span>
+                <span className="user-chip-role">{roleLabel(user)}</span>
+              </span>
+            </div>
+            <button type="button" className="button button-outline" onClick={onSignOut}>
+              Logout
+            </button>
           </div>
         </header>
 
@@ -51,7 +57,7 @@ export function Dashboard({ user, onSignOut }: { user: FinanceUser; onSignOut: (
 
           <div className="card">
             <p>
-              You're signed in as <strong>{user.name || user.email}</strong>
+              You're signed in as <strong>{displayName(user)}</strong>
               {user.name ? ` (${user.email})` : ''}.
             </p>
             <p className="muted">Finance reporting modules will appear here.</p>

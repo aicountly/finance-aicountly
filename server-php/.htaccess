@@ -1,0 +1,39 @@
+# ---------------------------------------------------------------------------
+# Apache config for the Finance API as deployed.
+#
+# The deploy workflow rsyncs this whole `server-php/` tree into
+# `<docroot>/api/`, so THIS file becomes `<docroot>/api/.htaccess` and is the
+# only thing standing between a request for
+# https://finance.aicountly.org/api/v1/auth/sso-callback and the SPA.
+#
+# Without it, `/api/v1/...` matches no file on disk, the document root's
+# .htaccess (web/public/.htaccess) is what ends up handling the request, and
+# Console's SSO callback renders index.html instead of ever reaching PHP —
+# the browser stays on /api/v1/auth/sso-callback showing the sign-in prompt
+# and the user never gets a Finance token.
+#
+# mod_rewrite's per-directory rules are not inherited from the parent
+# directory, so the rules below replace the SPA fallback for everything under
+# /api rather than competing with it.
+# ---------------------------------------------------------------------------
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+
+  # Apache drops the Authorization header when it rewrites to a front
+  # controller, which would break every `Bearer <finance jwt>` request
+  # (GET /v1/auth/me). Re-expose it as REDIRECT_HTTP_AUTHORIZATION, which
+  # AuthFilter reads.
+  RewriteCond %{HTTP:Authorization} ^(.+)$
+  RewriteRule ^ - [E=HTTP_AUTHORIZATION:%1]
+
+  # Route anything that is not a real file or directory through the PHP front
+  # controller. index.php strips the leading /api/ before matching routes.
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteRule .* public/index.php [L,QSA]
+</IfModule>
+
+# api/ lives inside the web document root, so the API's .env would otherwise
+# be fetchable at https://finance.aicountly.org/api/.env (see docs/DEPLOYMENT.md).
+RedirectMatch 404 /\.(?!well-known)

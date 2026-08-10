@@ -33,10 +33,23 @@ it behaves differently from the React variables.
 ## Sign-in (Console SSO)
 
 Finance has no login form of its own. `console.aicountly.org` is the identity
-provider for all Top Controller Apps — a user clicks **Finance** from
-Console's App Launcher, is redirected through `server-php`'s
-`/v1/auth/sso-callback`, and lands on the Finance Dashboard already signed
-in. See `console-react-app`'s `AUTH_INTEGRATION.md` for the full contract and
+provider for all Top Controller Apps. There are two ways in, and both end on
+the Finance Dashboard:
+
+- **From Console's App Launcher.** Console redirects to `server-php`'s
+  `/api/v1/auth/sso-callback?token=…`, which exchanges the one-time key for a
+  Finance JWT and hands the browser back to the SPA already signed in.
+- **Straight to `finance.aicountly.org`.** The SPA asks its own API to trade
+  the shared `.aicountly.org` Console cookie for a Finance JWT
+  (`POST /api/v1/auth/console-session`). If there is no Console session, the
+  browser is sent to Console's login form with `?return=` pointing back here,
+  so finishing the login lands on the Finance Dashboard.
+
+Anything else stops on an explanatory prompt rather than redirecting: an
+account without a Finance grant would otherwise bounce between the two
+domains forever, since Console considers it signed in.
+
+See `console-react-app`'s `AUTH_INTEGRATION.md` for the full contract and
 `server-php/.env.example` for the required `CONSOLE_API_URL` /
 `CONTROLLER_APP_CODE` / `JWT_SECRET` settings.
 
@@ -54,8 +67,8 @@ template. Copy it and fill in real values locally.
 
 | Variable | Description |
 | --- | --- |
-| `PROD_API_BASE_URL` | server-php API base URL for production |
-| `VITE_API_BASE_URL` | The endpoint this build actually uses |
+| `PROD_API_BASE_URL` | Optional production override; unset means the same-origin `/api` |
+| `VITE_API_BASE_URL` | The endpoint this build actually uses (defaults to `/api`) |
 | `VITE_APP_NAME` | Display name shown in the UI |
 | `VITE_APP_ENV` | `local` or `production` |
 | `VITE_CONSOLE_URL` | Console web app (defaults to `https://console.aicountly.org`) |
