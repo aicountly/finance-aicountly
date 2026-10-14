@@ -1,4 +1,5 @@
 import type { FinanceUser } from '../lib/financeApi'
+import { roleLabel as financeRoleLabel, useFinanceAccess } from '../lib/financeRoles'
 
 function initials(user: FinanceUser): string {
   const source = user.name?.trim() || user.email
@@ -11,9 +12,11 @@ function initials(user: FinanceUser): string {
     .toUpperCase()
 }
 
+/** The Finance role(s) Console assigned — e.g. "Finance Viewer". */
 function roleLabel(user: FinanceUser): string {
-  if (user.global_superadmin) return 'Super Admin'
-  return user.role || 'Member'
+  const labels = (user.roles ?? []).map(financeRoleLabel)
+  if (labels.length > 0) return labels.join(' · ')
+  return user.global_superadmin ? 'Super Admin' : 'No Finance role'
 }
 
 function displayName(user: FinanceUser): string {
@@ -21,6 +24,8 @@ function displayName(user: FinanceUser): string {
 }
 
 export function Dashboard({ user, onSignOut }: { user: FinanceUser; onSignOut: () => void }) {
+  const { isAdmin } = useFinanceAccess()
+
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -59,6 +64,10 @@ export function Dashboard({ user, onSignOut }: { user: FinanceUser; onSignOut: (
             <p>
               You're signed in as <strong>{displayName(user)}</strong>
               {user.name ? ` (${user.email})` : ''}.
+            </p>
+            <p>
+              Your Finance role: <strong>{roleLabel(user)}</strong>
+              {isAdmin ? '' : ' (read-only)'}.
             </p>
             <p className="muted">Finance reporting modules will appear here.</p>
           </div>

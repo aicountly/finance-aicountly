@@ -51,7 +51,43 @@ domains forever, since Console considers it signed in.
 
 See `console-react-app`'s `AUTH_INTEGRATION.md` for the full contract and
 `server-php/.env.example` for the required `CONSOLE_API_URL` /
-`CONTROLLER_APP_CODE` / `JWT_SECRET` settings.
+`CONTROLLER_APP_CODE` / `CONSOLE_API_TOKEN` / `JWT_SECRET` settings.
+
+### Roles (assigned in Console)
+
+A Console grant alone does not let anyone in: a Console superadmin assigns
+Finance roles per user (app_code `finance`):
+
+| Role | Label |
+| --- | --- |
+| `finance_admin` | Finance Administrator |
+| `finance_viewer` | Finance Viewer (read-only) |
+
+- **Sign-in** (SSO callback or console-session): Console's `app_roles` must be
+  non-empty, or the user must be `app_superadmin` (who holds both roles).
+  Otherwise sign-in stops with *"Access not assigned. Ask a Console superadmin
+  to assign you a role."* (`sso_error=role_not_assigned` /
+  `reason: role_not_assigned`). A Console that predates per-app roles (no
+  `app_roles` in its answer) admits only a Console global superadmin.
+- **The Finance JWT** keeps its existing claims (`sub`, `email`, `name`,
+  `role` = Console role, `gsa`) and adds `roles` (Finance roles),
+  `app_superadmin`, `console_user_id` and `authz_version`.
+  `GET /api/v1/auth/me` returns `roles`.
+- **Every authenticated request** re-checks the roles with Console's
+  user-access endpoint (service token `CONSOLE_API_TOKEN`, 60 s cache):
+  revoked → 403 with the message above; changed → the request runs with the
+  new roles. If Console cannot be reached the token's roles are used only
+  while the token is less than 12 h old (else 503). If `CONSOLE_API_TOKEN` is
+  not set, the token's roles are trusted and a warning is logged —
+  **production must set it.** Tokens issued before roles existed (no `roles`
+  claim) get a 401 and the SPA silently signs in again.
+- **Web:** `useFinanceAccess()` (`web/src/lib/financeRoles.ts`) gives any
+  screen `roles`, `hasRole()` and `isAdmin`; admin-only controls must render
+  only for `finance_admin`. No current screen differs by role; the dashboard
+  shows the assigned role.
+
+Tests: `php server-php/tests/run.php` (policy unit tests plus the real API
+under `php -S` against a stub Console).
 
 | Script | Purpose |
 | --- | --- |

@@ -27,6 +27,10 @@
   RewriteCond %{HTTP:Authorization} ^(.+)$
   RewriteRule ^ - [E=HTTP_AUTHORIZATION:%1]
 
+  # The test harness (server-php/tests) is never deployed (see the rsync
+  # excludes in deploy-production.yml); refuse it here as well.
+  RewriteRule ^tests(/|$) - [R=404,L]
+
   # Route anything that is not a real file or directory through the PHP front
   # controller. index.php strips the leading /api/ before matching routes.
   RewriteCond %{REQUEST_FILENAME} !-f

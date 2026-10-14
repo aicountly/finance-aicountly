@@ -3,12 +3,30 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../Helpers/JwtHelper.php';
 require_once __DIR__ . '/../Helpers/ResponseHelper.php';
+require_once __DIR__ . '/../Services/ConsoleIdentityService.php';
+require_once __DIR__ . '/../Services/FinanceAccessPolicy.php';
+require_once __DIR__ . '/../Services/AuthzCache.php';
+
+use App\Services\AuthzCache;
+use App\Services\ConsoleIdentityService;
+use App\Services\FinanceAccessPolicy;
 
 /**
- * Finance holds no local user table — the portal JWT issued at SSO time is
- * the full source of truth for the request, so authentication here is a
- * stateless signature + expiry check (unlike Console's AuthFilter, which
- * also verifies a `sessions` row).
+ * Finance holds no local user table, so authentication starts as a stateless
+ * signature + expiry check of the portal JWT issued at SSO time.
+ *
+ * Roles are then re-validated against Console on every authenticated request
+ * (there is no refresh endpoint to hang it on): when CONSOLE_API_URL and
+ * CONSOLE_API_TOKEN are set, the user's current Finance roles are pulled from
+ * Console's user-access endpoint, cached for 60 s (APCu or a temp file).
+ *
+ *   revoked in Console        → 403 "Access not assigned…"
+ *   roles changed in Console  → the request runs with the new roles
+ *   Console unreachable       → token roles kept only if it was issued < 12 h ago, else 503
+ *   not configured            → token roles kept, warning logged (production must configure)
+ *
+ * Tokens issued before Finance carried roles (no `roles` claim) are refused,
+ * so the SPA silently signs in again through Console.
  */
 class AuthFilter
 {
@@ -75,7 +93,69 @@ class AuthFilter
             json_unauthorized('Invalid token payload.');
         }
 
+        if (!isset($payload['roles']) || !is_array($payload['roles'])) {
+            json_unauthorized('Sign in again to load your Finance role.');
+        }
+
+        $payload = self::revalidateRoles($payload, new ConsoleIdentityService());
+
+        if ($payload['roles'] === []) {
+            json_forbidden(FinanceAccessPolicy::MSG_NOT_ASSIGNED);
+        }
+
         $currentUser = $payload;
+
+        return $payload;
+    }
+
+    /**
+     * @param array<string,mixed> $payload decoded Finance JWT
+     * @return array<string,mixed> payload with current `roles`
+     */
+    public static function revalidateRoles(array $payload, ConsoleIdentityService $console): array
+    {
+        if (!$console->isUserAccessConfigured()) {
+            error_log('[finance] Roles not re-validated with Console: set CONSOLE_API_URL and CONSOLE_API_TOKEN (production must).');
+
+            return $payload;
+        }
+
+        $consoleUserId = (int) ($payload['console_user_id'] ?? 0);
+        $email         = strtolower(trim((string) ($payload['email'] ?? '')));
+        $appCode       = strtolower(trim((string) ($_ENV['CONTROLLER_APP_CODE'] ?? 'finance'))) ?: 'finance';
+        $cacheKey      = $appCode . '|' . ($consoleUserId > 0 ? 'id:' . $consoleUserId : 'email:' . $email);
+
+        $verdict = AuthzCache::get($cacheKey);
+        if ($verdict === null) {
+            $lookup = $console->userAccess($consoleUserId > 0 ? $consoleUserId : null, $email);
+            if ($lookup['status'] === 'ok') {
+                $roles   = FinanceAccessPolicy::rolesFromUserAccess($lookup['data']);
+                $verdict = [
+                    'revoked'        => $roles === null,
+                    'roles'          => $roles ?? [],
+                    'app_superadmin' => !empty($lookup['data']['app_superadmin']),
+                    'authz_version'  => $lookup['data']['authz_version'] ?? null,
+                ];
+                AuthzCache::set($cacheKey, $verdict);
+            }
+        }
+
+        if ($verdict === null) {
+            // Console could not be asked: trust the token's roles for a while.
+            if (!FinanceAccessPolicy::withinOfflineGrace((int) ($payload['iat'] ?? 0), time())) {
+                json_error('Could not confirm your Finance access with Console. Sign in again.', [], 503);
+            }
+
+            return $payload;
+        }
+
+        if (!empty($verdict['revoked'])) {
+            json_forbidden(FinanceAccessPolicy::MSG_NOT_ASSIGNED);
+        }
+
+        $payload['roles']          = array_values((array) $verdict['roles']);
+        $payload['app_superadmin'] = (bool) $verdict['app_superadmin'];
+        $payload['authz_version']  = $verdict['authz_version'];
 
         return $payload;
     }

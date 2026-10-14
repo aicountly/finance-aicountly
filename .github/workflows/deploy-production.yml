@@ -294,6 +294,7 @@ jobs:
             --exclude='.env' \
             --exclude='.env.*' \
             --exclude='.git*' \
+            --exclude='tests/' \
             --chmod=D755,F644 \
             -e ssh \
             server-php/ "deploy-target:$REMOTE_ROOT/api/"
