@@ -405,4 +405,15 @@ test('not configured: token roles trusted; token without roles refused', functio
     same(401, me($apiUnconfigured, mintToken([]))['status'], 'pre-roles token');
 });
 
+test('GET /api/health reports Console role sync (booleans only)', function () use ($api, $apiUnconfigured): void {
+    $on = http('GET', $api . '/api/health');
+    same(200, $on['status'], 'status');
+    same(true, $on['json']['data']['checks']['console_role_sync'] ?? null, 'configured API: console_role_sync true');
+    same('ok', $on['json']['data']['status'] ?? null, 'status ok');
+    $off = http('GET', $apiUnconfigured . '/api/health');
+    same(false, $off['json']['data']['checks']['console_role_sync'] ?? null, 'no CONSOLE_API_TOKEN: console_role_sync false');
+    same('misconfigured', $off['json']['data']['status'] ?? null, 'status misconfigured');
+    check(!str_contains(json_encode($on['json']), SERVICE_TOKEN), 'no token in the answer');
+});
+
 echo "\n{$passed} assertions passed.\n";

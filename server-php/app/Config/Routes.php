@@ -10,6 +10,12 @@ declare(strict_types=1);
  */
 return [
     'GET' => [
+        // Public readiness flags (booleans only) for post-deploy and live verification.
+        'health' => [
+            'controller' => 'Ops\\HealthController',
+            'method'     => 'index',
+            'auth'       => false,
+        ],
         'v1/auth/sso-callback' => [
             'controller' => 'Auth\\AuthController',
             'method'     => 'ssoCallback',
