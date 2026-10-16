@@ -25,7 +25,7 @@ jobs:
   deploy:
     name: Build and deploy to Production
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     steps:
       - name: Check out repository
@@ -294,12 +294,35 @@ jobs:
             --exclude='.env' \
             --exclude='.env.*' \
             --exclude='.git*' \
+            --exclude='tests/' \
             --chmod=D755,F644 \
             -e ssh \
             server-php/ "deploy-target:$REMOTE_ROOT/api/"
 
           echo "Deployed server-php to \$REMOTE_ROOT/api/"
           echo "::notice::If this is the first API deploy, create api/.env on the server with the database credentials — it is never uploaded."
+
+      # Console staff roles, live (scripts/ci/live-feature-checks.py; flow-react-app
+      # docs/GO_LIVE_VERIFICATION.md): GET /api/health reports console role sync configured, the
+      # no-role account is refused, the staff account signs in with its Console roles and every
+      # request re-checks them. Finance had no post-deploy check; this is it. Signs the
+      # verification accounts in only.
+      - name: Live feature checks
+        env:
+          # The server stands in for the runner when the runner is shown the host's anti-bot page.
+          VERIFY_SSH: ssh deploy-target
+          # Shared verification identities (org-level secrets; docs/GO_LIVE_VERIFICATION.md in flow-react-app).
+          VERIFY_CONSOLE_API: ${{ vars.VERIFY_CONSOLE_API }}
+          VERIFY_STAFF_EXPECTED_ROLES: ${{ vars.VERIFY_STAFF_EXPECTED_ROLES }}
+          VERIFY_IMAP_HOST: ${{ secrets.VERIFY_IMAP_HOST }}
+          VERIFY_IMAP_PORT: ${{ secrets.VERIFY_IMAP_PORT }}
+          VERIFY_IMAP_USER: ${{ secrets.VERIFY_IMAP_USER }}
+          VERIFY_IMAP_PASSWORD: ${{ secrets.VERIFY_IMAP_PASSWORD }}
+          VERIFY_STAFF_EMAIL: ${{ secrets.VERIFY_STAFF_EMAIL }}
+          VERIFY_STAFF_PASSWORD: ${{ secrets.VERIFY_STAFF_PASSWORD }}
+          VERIFY_NOROLE_EMAIL: ${{ secrets.VERIFY_NOROLE_EMAIL }}
+          VERIFY_NOROLE_PASSWORD: ${{ secrets.VERIFY_NOROLE_PASSWORD }}
+        run: python3 scripts/ci/live-feature-checks.py production
 
       - name: Clean up SSH credentials
         if: always()

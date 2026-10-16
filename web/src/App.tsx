@@ -2,6 +2,7 @@ import './App.css'
 import { useFinanceAuth } from './hooks/useFinanceAuth'
 import { SignInPrompt } from './components/SignInPrompt'
 import { Dashboard } from './components/Dashboard'
+import { FinanceAccessContext, financeAccessFor } from './lib/financeRoles'
 
 function App() {
   const { user, loading, redirecting, error, signOut } = useFinanceAuth()
@@ -26,7 +27,11 @@ function App() {
     return <SignInPrompt error={error} />
   }
 
-  return <Dashboard user={user} onSignOut={signOut} />
+  return (
+    <FinanceAccessContext.Provider value={financeAccessFor(user)}>
+      <Dashboard user={user} onSignOut={signOut} />
+    </FinanceAccessContext.Provider>
+  )
 }
 
 export default App

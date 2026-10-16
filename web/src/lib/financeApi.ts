@@ -11,8 +11,12 @@ export interface FinanceUser {
   id: string | number | null
   name: string
   email: string
+  /** The user's Console role (not a Finance role). */
   role: string
   global_superadmin: boolean
+  /** Finance roles assigned in Console: finance_admin and/or finance_viewer. */
+  roles: string[]
+  app_superadmin: boolean
 }
 
 /**
@@ -24,6 +28,7 @@ export interface FinanceUser {
 export type ConsoleSessionReason =
   | 'no_console_session'
   | 'no_finance_access'
+  | 'role_not_assigned'
   | 'console_unreachable'
 
 export interface ConsoleSessionResult {

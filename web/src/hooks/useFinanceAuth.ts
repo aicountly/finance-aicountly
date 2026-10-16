@@ -58,6 +58,7 @@ const SSO_ERROR_MESSAGES: Record<string, string> = {
   invalid_or_expired_token: 'Your Console sign-in link expired before it was used. Go back to Console and click Finance again.',
   no_finance_access: 'Your Console account does not have Finance access. Ask a Console admin to grant it under Access Management → Controller App Access.',
   console_unreachable: 'Could not reach Console to verify your sign-in. Check your connection and try again in a moment.',
+  role_not_assigned: 'Access not assigned. Ask a Console superadmin to assign you a role.',
 }
 
 // Mirrors AuthController::classifyIntrospectFailure() — the direct-visit
@@ -66,6 +67,7 @@ const SESSION_ERROR_MESSAGES: Record<ConsoleSessionReason, string> = {
   no_console_session: 'Your Console session has ended. Sign in again to open Finance.',
   no_finance_access: 'You are signed in to Console, but this account does not have Finance access. Ask a Console admin to grant it under Access Management → Controller App Access.',
   console_unreachable: 'Could not reach Console to verify your sign-in. Check your connection and try again in a moment.',
+  role_not_assigned: 'Access not assigned. Ask a Console superadmin to assign you a role.',
 }
 
 function ssoErrorMessage(code: string): string {

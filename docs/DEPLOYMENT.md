@@ -70,6 +70,7 @@ FRONTEND_URL=https://finance.aicountly.org
 
 CONSOLE_API_URL=https://console.aicountly.org/api
 CONTROLLER_APP_CODE=finance
+CONSOLE_API_TOKEN=<Console service token with capability staff.roles>
 
 JWT_SECRET=<long random value, different from Console's JWT_SECRET>
 TOKEN_TTL_HOURS=8
@@ -77,9 +78,23 @@ TOKEN_TTL_HOURS=8
 CORS_ORIGINS=https://finance.aicountly.org
 ```
 
+**`CONSOLE_API_TOKEN` is required in production.** Finance has no refresh
+endpoint, so every authenticated request re-checks the user's Finance roles
+with Console (`GET {CONSOLE_API_URL}/portal/controller-apps/user-access`),
+cached for 60 s. Without the token a role removed in Console keeps working
+until the Finance JWT expires (`TOKEN_TTL_HOURS`), and the API logs a
+warning on every request. See
+[Roles](../README.md#roles-assigned-in-console).
+
+The 60-second cache uses APCu when it is enabled, otherwise one small file per
+user under the system temp directory; `FINANCE_AUTHZ_CACHE_DIR=<path>`
+(optional) moves it, e.g. when the host's temp directory is shared or not
+writable.
+
 It is never committed and never uploaded: `.gitignore` excludes it, and both
 rsync steps pass `--exclude='.env'` so a `--delete` deploy leaves the
-server-side file untouched.
+server-side file untouched. `server-php/tests/` is excluded too (it is the
+local test harness, `php server-php/tests/run.php`).
 
 Console must also list `https://finance.aicountly.org` in its own
 `CORS_ORIGINS` (server-php/.env on the Console host) for the direct-visit

@@ -1,0 +1,100 @@
+# ---------------------------------------------------------------------------
+# Verify the live Finance, WITHOUT deploying anything
+#
+# MANUAL ONLY (workflow_dispatch). Runs the live feature checks the deploy
+# workflow runs when it finishes (scripts/ci/live-feature-checks.py; the
+# checklist is docs/GO_LIVE_VERIFICATION.md in flow-react-app): Console role
+# sync configured, the no-role account refused, the staff account's roles
+# re-checked with Console — and, on request, the revocation drill. Nothing is
+# built, uploaded or changed.
+#
+# SSH is set up exactly as deploy-production.yml sets it up, only so that a
+# request the runner is shown the host's anti-bot page for can be made again by
+# the server itself (with curl reading its URL, headers and body from stdin).
+# ---------------------------------------------------------------------------
+name: Verify live app
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Which deployment to check (Finance has production only)
+        type: choice
+        options:
+          - production
+        default: production
+      strict:
+        description: Go-live sign-off — also fail every check that could not run (a secret or test identity missing)
+        type: boolean
+        default: false
+      revocation_drill:
+        description: Revocation drill — you revoke the drill account's role in Console while the job waits (watch the log)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
+          SSH_PORT: ${{ secrets.PROD_SSH_PORT }}
+          SSH_USER: ${{ secrets.PROD_SSH_USER }}
+        run: |
+          if [ -z "$SSH_PRIVATE_KEY" ] || [ -z "$SSH_HOST" ] || [ -z "$SSH_USER" ]; then
+            echo "::warning::PROD_SSH_* not set: no retry from the server when the runner is shown the anti-bot page."
+            exit 0
+          fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" | sed 's/\r$//' > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "${SSH_PORT:-22}" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          chmod 600 ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<CFG
+          Host deploy-target
+            HostName $SSH_HOST
+            User $SSH_USER
+            Port ${SSH_PORT:-22}
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            PubkeyAcceptedAlgorithms +ssh-rsa
+            HostKeyAlgorithms +ssh-rsa
+            BatchMode yes
+          CFG
+          chmod 600 ~/.ssh/config
+          echo "VERIFY_SSH=ssh deploy-target" >> "$GITHUB_ENV"
+
+      - name: Live feature checks
+        env:
+          TARGET: ${{ inputs.environment }}
+          LIVE_VERIFY_STRICT: ${{ inputs.strict && '1' || '0' }}
+          LIVE_VERIFY_REVOCATION_DRILL: ${{ inputs.revocation_drill && '1' || '0' }}
+          # Shared verification identities (org-level secrets; docs/GO_LIVE_VERIFICATION.md in flow-react-app).
+          VERIFY_CONSOLE_API: ${{ vars.VERIFY_CONSOLE_API }}
+          VERIFY_STAFF_EXPECTED_ROLES: ${{ vars.VERIFY_STAFF_EXPECTED_ROLES }}
+          VERIFY_IMAP_HOST: ${{ secrets.VERIFY_IMAP_HOST }}
+          VERIFY_IMAP_PORT: ${{ secrets.VERIFY_IMAP_PORT }}
+          VERIFY_IMAP_USER: ${{ secrets.VERIFY_IMAP_USER }}
+          VERIFY_IMAP_PASSWORD: ${{ secrets.VERIFY_IMAP_PASSWORD }}
+          VERIFY_STAFF_EMAIL: ${{ secrets.VERIFY_STAFF_EMAIL }}
+          VERIFY_STAFF_PASSWORD: ${{ secrets.VERIFY_STAFF_PASSWORD }}
+          VERIFY_NOROLE_EMAIL: ${{ secrets.VERIFY_NOROLE_EMAIL }}
+          VERIFY_NOROLE_PASSWORD: ${{ secrets.VERIFY_NOROLE_PASSWORD }}
+          VERIFY_DRILL_EMAIL: ${{ secrets.VERIFY_DRILL_EMAIL }}
+          VERIFY_DRILL_PASSWORD: ${{ secrets.VERIFY_DRILL_PASSWORD }}
+        run: python3 scripts/ci/live-feature-checks.py "$TARGET"
+
+      - name: Clean up SSH credentials
+        if: always()
+        run: rm -f ~/.ssh/deploy_key ~/.ssh/config

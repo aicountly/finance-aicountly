@@ -4,14 +4,20 @@ declare(strict_types=1);
 require_once __DIR__ . '/../BaseController.php';
 require_once __DIR__ . '/../../Helpers/JwtHelper.php';
 require_once __DIR__ . '/../../Services/ConsoleIdentityService.php';
+require_once __DIR__ . '/../../Services/FinanceAccessPolicy.php';
 
 use App\Services\ConsoleIdentityService;
+use App\Services\FinanceAccessPolicy;
 
 /**
  * Finance has no local user table or login form — Console is the only
  * identity provider (see console-react-app AUTH_INTEGRATION.md). This
  * controller only ever turns a Console-issued credential into a Finance
  * portal JWT; it never accepts a password.
+ *
+ * Roles come from Console too (app_code `finance`: finance_admin,
+ * finance_viewer). A Console user with no Finance role assigned is refused
+ * with "Access not assigned…" — an active Console grant alone is not enough.
  */
 class AuthController extends BaseController
 {
@@ -42,7 +48,12 @@ class AuthController extends BaseController
             $this->redirectToFrontend(['sso_error' => $this->classifyExchangeFailure()]);
         }
 
-        $jwt = $this->issueToken($data);
+        $access = FinanceAccessPolicy::rolesFromIdentity($data);
+        if (!$access['allowed']) {
+            $this->redirectToFrontend(['sso_error' => 'role_not_assigned']);
+        }
+
+        $jwt = $this->issueToken($data, $access);
 
         $this->redirectToFrontend(['token' => $jwt]);
     }
@@ -78,15 +89,25 @@ class AuthController extends BaseController
             );
         }
 
+        $access = FinanceAccessPolicy::rolesFromIdentity($data);
+        if (!$access['allowed']) {
+            json_success(
+                ['active' => false, 'reason' => 'role_not_assigned'],
+                FinanceAccessPolicy::MSG_NOT_ASSIGNED,
+            );
+        }
+
         json_success([
             'active' => true,
-            'token'  => $this->issueToken($data),
-            'user'   => $this->publicUser($data),
+            'token'  => $this->issueToken($data, $access),
+            'user'   => $this->publicUser($data, $access),
         ]);
     }
 
     /**
      * GET /v1/auth/me — current Finance user, decoded from the portal JWT.
+     * `roles` are the Finance roles: re-validated against Console by
+     * AuthFilter when CONSOLE_API_TOKEN is configured, else as signed in.
      */
     public function me(array $params, array $body): never
     {
@@ -103,6 +124,8 @@ class AuthController extends BaseController
             'email'             => $payload['email'] ?? '',
             'role'              => $payload['role'] ?? '',
             'global_superadmin' => (bool) ($payload['gsa'] ?? false),
+            'roles'             => array_values((array) ($payload['roles'] ?? [])),
+            'app_superadmin'    => (bool) ($payload['app_superadmin'] ?? false),
         ]);
     }
 
@@ -163,26 +186,40 @@ class AuthController extends BaseController
         };
     }
 
-    /** @param array<string,mixed> $introspectData */
-    private function issueToken(array $introspectData): string
+    /**
+     * `role` stays the Console role (unchanged claim); `roles` are the
+     * Finance roles Console assigned in app `finance`.
+     *
+     * @param array<string,mixed> $introspectData
+     * @param array{roles:list<string>, app_superadmin:bool} $access
+     */
+    private function issueToken(array $introspectData, array $access): string
     {
         $user = (array) ($introspectData['user'] ?? []);
         $authConfig = require __DIR__ . '/../../Config/Auth.php';
         $ttlHours = $authConfig['TOKEN_TTL_HOURS'];
+        $consoleUserId = (int) ($introspectData['console_user_id'] ?? 0);
 
         return jwt_encode([
-            'sub'   => $user['id'] ?? null,
-            'email' => $user['email'] ?? '',
-            'name'  => $user['name'] ?? '',
-            'role'  => $user['role'] ?? '',
-            'gsa'   => (bool) ($introspectData['global_superadmin'] ?? false),
-            'iat'   => time(),
-            'exp'   => time() + ($ttlHours * 3600),
+            'sub'             => $user['id'] ?? null,
+            'email'           => $user['email'] ?? '',
+            'name'            => $user['name'] ?? '',
+            'role'            => $user['role'] ?? '',
+            'gsa'             => (bool) ($introspectData['global_superadmin'] ?? false),
+            'roles'           => $access['roles'],
+            'app_superadmin'  => $access['app_superadmin'],
+            'console_user_id' => $consoleUserId > 0 ? $consoleUserId : null,
+            'authz_version'   => $introspectData['authz_version'] ?? null,
+            'iat'             => time(),
+            'exp'             => time() + ($ttlHours * 3600),
         ], $authConfig['JWT_SECRET']);
     }
 
-    /** @param array<string,mixed> $introspectData */
-    private function publicUser(array $introspectData): array
+    /**
+     * @param array<string,mixed> $introspectData
+     * @param array{roles:list<string>, app_superadmin:bool} $access
+     */
+    private function publicUser(array $introspectData, array $access): array
     {
         $user = (array) ($introspectData['user'] ?? []);
 
@@ -192,6 +229,8 @@ class AuthController extends BaseController
             'email'             => $user['email'] ?? '',
             'role'              => $user['role'] ?? '',
             'global_superadmin' => (bool) ($introspectData['global_superadmin'] ?? false),
+            'roles'             => $access['roles'],
+            'app_superadmin'    => $access['app_superadmin'],
         ];
     }
 
