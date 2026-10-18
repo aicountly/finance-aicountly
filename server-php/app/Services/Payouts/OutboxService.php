@@ -16,7 +16,10 @@ namespace App\Services\Payouts;
  *   Idempotency-Key: {event_key}
  *   {batch_ref, item_ref, status, tds_amount, gst_amount, net_amount, utr, paid_at, reason}
  *
- * 2xx → delivered. Anything else (or no answer) → retried with back-off 2, 4, 8 … minutes
+ * Delivered only when Engage answers 2xx with its own receipt — JSON {ok:true, data:{item_ref: <this item>, …}}.
+ * A 2xx without it is not Engage (typically ENGAGE_API_BASE_URL without /api, which lands on engage's SPA
+ * fallback and answers 200 text/html) and is treated like a failure.
+ * Anything else (or no answer) → retried with back-off 2, 4, 8 … minutes
  * (at most 6 h apart); after 12 attempts the event is `dead` until an admin re-queues it.
  * Events for one payout item are delivered strictly in order: a later event waits while an
  * earlier one for the same item is undelivered.
@@ -30,7 +33,7 @@ final class OutboxService
     public const MAX_ATTEMPTS = 12;
     public const MAX_DELAY    = 360;
 
-    /** @var callable(string,array<string,string>,string):array{status:int, error:?string} */
+    /** @var callable(string,array<string,string>,string):array{status:int, error:?string, body?:?string} */
     private $post;
 
     public function __construct(private \PDO $pdo, ?callable $post = null)
@@ -108,7 +111,13 @@ final class OutboxService
                 ], (string) $row['payload']);
 
                 $attempts = (int) $row['attempts'] + 1;
-                if ($res['status'] >= 200 && $res['status'] < 300) {
+                $is2xx = $res['status'] >= 200 && $res['status'] < 300;
+                if ($is2xx && !self::isEngageReceipt($res['body'] ?? null, (string) (json_decode((string) $row['payload'], true)['item_ref'] ?? ''))) {
+                    $res['error'] = 'HTTP ' . $res['status'] . " but the answer is not Engage's payout-status receipt (JSON {ok:true, data:{item_ref}})"
+                        . ' — check ENGAGE_API_BASE_URL (production: https://engage.aicountly.org/api, with /api)';
+                    $is2xx = false;
+                }
+                if ($is2xx) {
                     $this->pdo->prepare(
                         "UPDATE outbox SET status = 'delivered', attempts = ?, last_http_status = ?, last_error = NULL, delivered_at = now() WHERE id = ?",
                     )->execute([$attempts, $res['status'], $row['id']]);
@@ -189,6 +198,15 @@ final class OutboxService
         return ['counts' => $counts, 'recent' => $stmt->fetchAll(), 'configured' => self::isConfigured()];
     }
 
+    /** Engage's answer to POST v1/inbound/finance/payout-status: {ok:true, data:{item_ref, status, result, …}}. */
+    public static function isEngageReceipt(?string $body, string $itemRef): bool
+    {
+        $json = is_string($body) ? json_decode($body, true) : null;
+
+        return is_array($json) && ($json['ok'] ?? null) === true && is_array($json['data'] ?? null)
+            && $itemRef !== '' && ($json['data']['item_ref'] ?? null) === $itemRef;
+    }
+
     private static function iso(mixed $ts): ?string
     {
         if ($ts === null || $ts === '') {
@@ -200,7 +218,7 @@ final class OutboxService
 
     /**
      * @param array<string,string> $headers
-     * @return array{status:int, error:?string}
+     * @return array{status:int, error:?string, body:?string}
      */
     public static function curlPost(string $url, array $headers, string $body): array
     {
@@ -226,6 +244,6 @@ final class OutboxService
             $error = 'HTTP ' . $status . ': ' . mb_substr(is_string($answer) ? $answer : '', 0, 200);
         }
 
-        return ['status' => $status, 'error' => $error];
+        return ['status' => $status, 'error' => $error, 'body' => is_string($answer) ? $answer : null];
     }
 }

@@ -586,6 +586,28 @@ test('outbox: dead after 12 attempts; only an admin re-queues', function () use 
     same(['pending', 0], [$pdo->query("SELECT status FROM outbox WHERE id = {$id}")->fetch()['status'], (int) $pdo->query("SELECT attempts FROM outbox WHERE id = {$id}")->fetch()['attempts']], 'pending again');
 });
 
+// Found end to end: ENGAGE_API_BASE_URL without /api reaches engage's SPA fallback, which answers the POST with
+// 200 index.html. That is not Engage's receipt, so the callback must stay undelivered.
+test('outbox: a 2xx that is not Engage\'s receipt (SPA 200 text/html, wrong item) is not delivered', function () use ($pdo, $dbEnv, $fakeEngage, $engageState): void {
+    $id = (int) $pdo->query("SELECT id FROM outbox WHERE status = 'pending' ORDER BY id LIMIT 1")->fetch()['id'];
+    check($id > 0, 'a pending event (re-queued above)');
+    $env = $dbEnv + ['ENGAGE_API_BASE_URL' => $fakeEngage . '/api', 'ENGAGE_FINANCE_KEY' => ENGAGE_OUT_KEY];
+    file_put_contents($engageState, json_encode(['statuses' => ['spa']]));
+    $out = deliver($env);
+    check(str_contains($out, 'delivered=0') && str_contains($out, 'retrying=1'), 'not delivered: ' . trim($out));
+    $row = $pdo->query("SELECT * FROM outbox WHERE id = {$id}")->fetch();
+    same(['pending', 1, 200], [$row['status'], (int) $row['attempts'], (int) $row['last_http_status']], 'kept pending with the 200 recorded');
+    check(str_contains((string) $row['last_error'], 'ENGAGE_API_BASE_URL'), 'error names ENGAGE_API_BASE_URL: ' . $row['last_error']);
+    same(false, \App\Services\Payouts\OutboxService::isEngageReceipt('{"ok":true,"data":{"item_ref":"W9-9"}}', 'W1-1'), 'receipt for another item is not this one');
+    same(false, \App\Services\Payouts\OutboxService::isEngageReceipt('{"success":true}', 'W1-1'), 'a bare success flag is not a receipt');
+    same(true, \App\Services\Payouts\OutboxService::isEngageReceipt('{"ok":true,"data":{"item_ref":"W1-1","status":"paid","result":"unchanged"}}', 'W1-1'), 'Engage receipt');
+
+    $pdo->exec("UPDATE outbox SET next_attempt_at = now() WHERE id = {$id}");
+    file_put_contents($engageState, json_encode(['statuses' => []]));
+    deliver($env);
+    same('delivered', $pdo->query("SELECT status FROM outbox WHERE id = {$id}")->fetch()['status'], 'delivered once Engage itself answers');
+});
+
 test('audit log: who / what / when / before / after; append-only', function () use ($T, $pdo): void {
     $r = api('GET', 'v1/audit-log?entity_type=payout_item&entity_id=' . itemId('W1-2'), $T['viewer']);
     $adj = array_values(array_filter($r['json']['data']['rows'], static fn ($x) => $x['action'] === 'item.adjusted'))[0];

@@ -86,7 +86,9 @@ FINANCE_DB_PASSWORD=<database password>
 
 FINANCE_DATA_KEY=<64 hex characters: php -r 'echo bin2hex(random_bytes(32)), PHP_EOL;'>
 
-FINANCE_INBOUND_ENGAGE_KEY=<same value as FINANCE_INBOUND_ENGAGE_KEY in Engage's .env, ≥ 32 chars>
+FINANCE_INBOUND_ENGAGE_KEY=<same value as FINANCE_OUTBOUND_KEY in Engage's .env, ≥ 32 chars>
+# Must end in /api: without it the POST lands on engage's web app (SPA fallback, 200 text/html)
+# and the callback is not delivered (the outbox records the error and retries).
 ENGAGE_API_BASE_URL=https://engage.aicountly.org/api
 ENGAGE_FINANCE_KEY=<same value as ENGAGE_INBOUND_FINANCE_KEY in Engage's .env, ≥ 32 chars>
 ```
@@ -218,7 +220,11 @@ Engage:
 It sends each queued update with `X-Finance-Key` and an `Idempotency-Key`,
 retries failures with back-off (2, 4, 8 … minutes, at most 6 h apart) and marks
 an update `dead` after 12 attempts (Settings → Engage status callbacks → Retry,
-finance admins). Updates for one item go out in order. Without
+finance admins). Updates for one item go out in order. An update counts as
+delivered only when Engage answers with its own receipt (JSON `ok: true` with the
+item's `item_ref`); any other 2xx — e.g. `ENGAGE_API_BASE_URL` without `/api`,
+answered by engage's web app with `index.html` — is recorded as an error and
+retried. Without
 `ENGAGE_API_BASE_URL` / `ENGAGE_FINANCE_KEY` it sends nothing and marks nothing
 delivered.
 
@@ -233,9 +239,10 @@ every check is true.
 1. Create the PostgreSQL database + user; add `FINANCE_DB_*` to `api/.env`.
 2. Generate `FINANCE_DATA_KEY` and store a copy with the database credentials.
 3. Agree two ≥ 32-character keys with the Engage operator:
-   `FINANCE_INBOUND_ENGAGE_KEY` (same name on both sides) and
+   `FINANCE_INBOUND_ENGAGE_KEY` here = `FINANCE_OUTBOUND_KEY` in Engage, and
    `ENGAGE_FINANCE_KEY` here = `ENGAGE_INBOUND_FINANCE_KEY` in Engage; set
-   `ENGAGE_API_BASE_URL`.
+   `ENGAGE_API_BASE_URL=https://engage.aicountly.org/api` (with `/api`). Engage
+   sets `FINANCE_API_BASE_URL=https://finance.aicountly.org/api` (with `/api`).
 4. Re-run the deploy (or `php api/bin/migrate.php`); check `/api/health`.
 5. Add the cron line above.
 6. In Console, assign Finance roles: `payout_approver` (approve, bank file,
