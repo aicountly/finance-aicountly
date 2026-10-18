@@ -1,8 +1,17 @@
 import './App.css'
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router'
 import { useFinanceAuth } from './hooks/useFinanceAuth'
 import { SignInPrompt } from './components/SignInPrompt'
-import { Dashboard } from './components/Dashboard'
+import { Layout } from './components/Layout'
 import { FinanceAccessContext, financeAccessFor } from './lib/financeRoles'
+import { DashboardPage } from './pages/DashboardPage'
+import { PayoutsPage } from './pages/PayoutsPage'
+import { BatchPage } from './pages/BatchPage'
+import { PayeesPage } from './pages/PayeesPage'
+import { PayeePage } from './pages/PayeePage'
+import { TdsRegisterPage } from './pages/TdsRegisterPage'
+import { SettingsPage } from './pages/SettingsPage'
+import { AuditLogPage } from './pages/AuditLogPage'
 
 function App() {
   const { user, loading, redirecting, error, signOut } = useFinanceAuth()
@@ -29,7 +38,21 @@ function App() {
 
   return (
     <FinanceAccessContext.Provider value={financeAccessFor(user)}>
-      <Dashboard user={user} onSignOut={signOut} />
+      <BrowserRouter>
+        <Routes>
+          <Route element={<Layout user={user} onSignOut={signOut} />}>
+            <Route index element={<DashboardPage />} />
+            <Route path="payouts" element={<PayoutsPage />} />
+            <Route path="payouts/:id" element={<BatchPage />} />
+            <Route path="payees" element={<PayeesPage />} />
+            <Route path="payees/:id" element={<PayeePage />} />
+            <Route path="tds" element={<TdsRegisterPage />} />
+            <Route path="settings" element={<SettingsPage />} />
+            <Route path="audit" element={<AuditLogPage />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
     </FinanceAccessContext.Provider>
   )
 }

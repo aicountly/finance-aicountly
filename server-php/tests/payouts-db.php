@@ -340,6 +340,7 @@ test('bank file: needs a debit account; checksum; full account numbers only in t
     same(422, $r['status'], 'no debit account → 422');
     same(200, api('PUT', 'v1/settings', $T['dave'], ['debit_account_number' => '123456789012'])['status'], 'admin sets the debit account');
     same('XXXXXX9012', api('GET', 'v1/settings', $T['viewer'])['json']['data']['values']['debit_account_number'], 'viewer sees it masked');
+    check(!str_contains(json_encode(api('GET', 'v1/audit-log?entity_type=settings', $T['viewer'])['json']), '123456789012'), 'debit account masked in the audit log too');
 
     $g = api('POST', "v1/payout-batches/{$id}/bank-file", $T['carol'], ['format' => 'generic_neft_csv']);
     same(201, $g['status'], 'generated');

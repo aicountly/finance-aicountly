@@ -174,6 +174,12 @@ final class SettingsService
                 $changedAfter[$key]  = $value;
             }
             if ($changedAfter !== []) {
+                // The audit log is readable by every Finance role: mask the company's debit account there too.
+                foreach (['changedBefore', 'changedAfter'] as $snap) {
+                    if (isset(${$snap}['debit_account_number']) && ${$snap}['debit_account_number'] !== '') {
+                        ${$snap}['debit_account_number'] = 'XXXXXX' . substr(${$snap}['debit_account_number'], -4);
+                    }
+                }
                 (new AuditLog($this->pdo))->record($actor, 'settings.updated', 'settings', null, $changedBefore, $changedAfter);
             }
             $this->pdo->commit();
