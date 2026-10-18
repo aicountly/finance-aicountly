@@ -45,12 +45,16 @@ require_once dirname(__DIR__) . '/app/Helpers/JwtHelper.php';
 require_once dirname(__DIR__) . '/app/Filters/CorsFilter.php';
 require_once dirname(__DIR__) . '/app/Filters/AuthFilter.php';
 require_once dirname(__DIR__) . '/app/Filters/ServiceKeyFilter.php';
+require_once dirname(__DIR__) . '/app/Filters/S2sFilter.php';
 
 /* ------------------------------------------------------------------
- * 4. CORS
+ * 4. CORS — never for the signed server-to-server routes (v1/inbound/manage/…):
+ *    no browser may call them, with or without a staff session.
  * ------------------------------------------------------------------ */
 
-CorsFilter::handle();
+if (!S2sFilter::isS2sPath((string) ($_SERVER['REQUEST_URI'] ?? '/'))) {
+    CorsFilter::handle();
+}
 
 /* ------------------------------------------------------------------
  * 5. Parse request
@@ -112,6 +116,11 @@ try {
         ServiceKeyFilter::handle((string) $matchedRoute['inbound']);
     }
 
+    // AIC-S2S v1 (Manage → Finance): signature, nonce, rate limit. Answers with the contract envelope.
+    if (!empty($matchedRoute['s2s'])) {
+        S2sFilter::handle((array) $matchedRoute['s2s']);
+    }
+
     if (!empty($matchedRoute['auth'])) {
         AuthFilter::handle();
 
@@ -163,7 +172,11 @@ try {
     $controller->$method($routeParams, $body);
 } catch (\App\Support\ApiException $e) {
     // Written for the caller (validation, conflict, four-eyes, not configured): shown in every environment.
-    json_error($e->getMessage(), $e->errors(), $e->status());
+    $errors = $e->errors();
+    if ($e->errorCode() !== null && !array_key_exists('code', $errors)) {
+        $errors['code'] = $e->errorCode();
+    }
+    json_error($e->getMessage(), $errors, $e->status());
 } catch (\Throwable $e) {
     $code    = exception_http_status($e);
     $message = exception_public_message($e, $appEnv);

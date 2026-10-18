@@ -5,6 +5,9 @@ and a plain-PHP API (**server-php**, PDO PostgreSQL) on the live cPanel portal.
 Its first module is **weekly seller payouts**: Engage sends each week's payout
 run as a draft; Finance staff review it, approve it (four-eyes), produce the bank
 bulk-upload file, and record the bank's UTRs. Finance never moves money itself.
+The second is **subscription invoicing** (dormant until configured): GST tax
+invoices and credit notes for AICOUNTLY subscriptions, read by Manage server to
+server — see [docs/INVOICING.md](docs/INVOICING.md).
 
 | Environment | URL |
 | --- | --- |
@@ -113,17 +116,35 @@ status back to `POST {ENGAGE_API_BASE_URL}/v1/inbound/finance/payout-status`
 `bin/outbox-deliver.php`. Database, cron, env and the tax assumptions to confirm
 with your CA: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#weekly-seller-payouts).
 
+## Subscription invoicing
+
+| Screen | What it does |
+| --- | --- |
+| Invoices | register of tax invoices and credit notes (FY, type, status, company, search), GSTR-1 CSV export; invoice detail with the stored PDF; request a credit note (full or partial) |
+| Credit note | four-eyes approval (someone other than the requester numbers and issues it) or rejection |
+| Offline payments | record a bank / UPI / cheque receipt with its UTR (maker); someone else verifies it against the statement and the tax invoice is issued |
+| Settings → Invoicing | seller profile (GSTIN, address, signatory) and the gapless document series per FY (finance admins) |
+
+Invoices are immutable (database triggers), numbered without gaps per FY, rendered
+to PDF through Gotenberg and stored at issue. Manage reads them with AIC-S2S v1
+signed requests (`/api/v1/inbound/manage/documents…`, filtered by `cmp_id`);
+customers never sign in to Finance. Data model, tax rules, the signature scheme
+with a worked example, environment variables, health flags and the runbook:
+[docs/INVOICING.md](docs/INVOICING.md).
+
 Tests: `php server-php/tests/run.php` — policy and payout unit tests (TDS
 threshold, GST modes, state machine, four-eyes, encryption, bank files), the
 real API under `php -S` against a stub Console, and the payout flow end to end
 against PostgreSQL (own database `finance_test` — `FINANCE_TEST_DB_NAME` overrides —
 plus `<name>_legacy` for the migration-002 test, both dropped afterwards; stub Engage
-for the outbox). Defaults to `127.0.0.1:5432` `postgres/postgres`
+for the outbox; invoicing against the same database with a stub Gotenberg and
+two concurrent issuing processes). Defaults to `127.0.0.1:5432` `postgres/postgres`
 (`FINANCE_TEST_DB_*` override); the PostgreSQL part is skipped with a warning
 when it is unreachable unless `FINANCE_TESTS_REQUIRE_DB=1`.
 
-API scripts (CLI only): `php server-php/bin/migrate.php [--status]` and
-`php server-php/bin/outbox-deliver.php` (cron, every 5 min).
+API scripts (CLI only): `php server-php/bin/migrate.php [--status]`,
+`php server-php/bin/outbox-deliver.php` and `php server-php/bin/invoicing-cron.php`
+(both cron, every 5 min).
 
 | Script | Purpose |
 | --- | --- |

@@ -12,6 +12,10 @@ import { PayeePage } from './pages/PayeePage'
 import { TdsRegisterPage } from './pages/TdsRegisterPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { AuditLogPage } from './pages/AuditLogPage'
+import { InvoicesPage } from './pages/InvoicesPage'
+import { InvoicePage } from './pages/InvoicePage'
+import { CreditNotePage } from './pages/CreditNotePage'
+import { OfflinePaymentsPage } from './pages/OfflinePaymentsPage'
 
 function App() {
   const { user, loading, redirecting, error, signOut } = useFinanceAuth()
@@ -47,6 +51,10 @@ function App() {
             <Route path="payees" element={<PayeesPage />} />
             <Route path="payees/:id" element={<PayeePage />} />
             <Route path="tds" element={<TdsRegisterPage />} />
+            <Route path="invoices" element={<InvoicesPage />} />
+            <Route path="invoices/:id" element={<InvoicePage />} />
+            <Route path="credit-notes/:id" element={<CreditNotePage />} />
+            <Route path="offline-payments" element={<OfflinePaymentsPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="audit" element={<AuditLogPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
