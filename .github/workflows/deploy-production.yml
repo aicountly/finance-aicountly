@@ -5,8 +5,9 @@
 # never deploys. Add no push/pull_request/schedule triggers to this file.
 #
 # What it does: builds the app on the runner, then rsyncs the built dist/
-# over SSH to the cPanel document root. No source, no node_modules, and no
-# .env ever reach the server.
+# over SSH to the cPanel document root, rsyncs server-php/ to <docroot>/api/,
+# and runs `php api/bin/migrate.php` on the server. No node_modules and no
+# .env ever reach the server; the server's api/.env is never overwritten.
 # ---------------------------------------------------------------------------
 name: Deploy to cPanel Production
 
@@ -300,7 +301,26 @@ jobs:
             server-php/ "deploy-target:$REMOTE_ROOT/api/"
 
           echo "Deployed server-php to \$REMOTE_ROOT/api/"
-          echo "::notice::If this is the first API deploy, create api/.env on the server with the database credentials — it is never uploaded."
+          echo "::notice::If this is the first API deploy, create api/.env on the server (FINANCE_DB_*, FINANCE_DATA_KEY, service keys — docs/DEPLOYMENT.md). It is never uploaded."
+
+      # Apply pending database migrations (server-php/database/migrations) on the
+      # server, after the new code is in place. bin/migrate.php reads api/.env, takes
+      # an advisory lock, applies each migration in its own transaction and refuses a
+      # migration file that changed after it was applied. Without FINANCE_DB_* in
+      # api/.env it changes nothing and exits 0 (payouts then answer 503 "not
+      # configured" and /api/health reports database: false); a configured database
+      # that fails to migrate fails the deploy.
+      - name: Run database migrations on the server
+        if: hashFiles('server-php/**') != ''
+        env:
+          REMOTE_ROOT: ${{ secrets.PROD_SSH_REMOTE_ROOT }}
+          # cPanel hosts sometimes expose the CLI as e.g. /usr/local/bin/ea-php83;
+          # set the PROD_PHP_BIN repository variable if plain `php` is not PHP 8.1+ CLI.
+          PHP_BIN: ${{ vars.PROD_PHP_BIN || 'php' }}
+        run: |
+          # The SSH session starts in the account's home directory, so a relative
+          # REMOTE_ROOT (public_html) resolves exactly as it did for rsync.
+          ssh deploy-target "cd \"$REMOTE_ROOT\" && $PHP_BIN api/bin/migrate.php"
 
       # Console staff roles, live (scripts/ci/live-feature-checks.py; flow-react-app
       # docs/GO_LIVE_VERIFICATION.md): GET /api/health reports console role sync configured, the

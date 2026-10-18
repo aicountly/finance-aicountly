@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
+  TOKEN_KEY,
   fetchConsoleSession,
   fetchMe,
   type ConsoleSessionReason,
@@ -7,7 +8,6 @@ import {
 } from '../lib/financeApi'
 import { redirectToConsoleLogin, redirectToConsoleLoginAfterSignOut } from '../lib/consoleAuth'
 
-const TOKEN_KEY = 'finance_token'
 
 /**
  * Timestamp of the last hand-off to Console's login form, cleared as soon as
