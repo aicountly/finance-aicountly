@@ -49,6 +49,7 @@ return [
         'v1/tds-register'                             => $r('Payouts\\TdsRegisterController', 'register', $view),
         'v1/tds-register/export'                      => $r('Payouts\\TdsRegisterController', 'export', $edit),
         'v1/settings'                                 => $r('Admin\\SettingsController', 'show', $view),
+        'v1/bank-accounts'                            => $r('Admin\\BankAccountController', 'index', $view),
         'v1/audit-log'                                => $r('Admin\\AuditLogController', 'index', $view),
         'v1/outbox'                                   => $r('Admin\\OutboxController', 'index', $view),
     ],
@@ -83,8 +84,15 @@ return [
         'v1/payout-items/{id}/reverse'     => $r('Payouts\\PayoutItemController', 'reverse', $approve),
 
         'v1/outbox/{id}/requeue' => $r('Admin\\OutboxController', 'requeue', $settings),
+
+        // Company (debit) bank accounts: every role lists them masked; only finance_admin changes them.
+        'v1/bank-accounts'                 => $r('Admin\\BankAccountController', 'create', $settings),
+        'v1/bank-accounts/{id}/default'    => $r('Admin\\BankAccountController', 'makeDefault', $settings),
+        'v1/bank-accounts/{id}/deactivate' => $r('Admin\\BankAccountController', 'deactivate', $settings),
+        'v1/bank-accounts/{id}/activate'   => $r('Admin\\BankAccountController', 'activate', $settings),
     ],
     'PUT' => [
-        'v1/settings' => $r('Admin\\SettingsController', 'update', $settings),
+        'v1/settings'           => $r('Admin\\SettingsController', 'update', $settings),
+        'v1/bank-accounts/{id}' => $r('Admin\\BankAccountController', 'update', $settings),
     ],
 ];

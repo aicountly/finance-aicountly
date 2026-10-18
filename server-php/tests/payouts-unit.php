@@ -7,6 +7,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../app/Filters/ServiceKeyFilter.php';
 
+use App\Services\CompanyBankAccountService;
 use App\Services\DataVault;
 use App\Services\FinanceAccessPolicy;
 use App\Services\Payouts\BankFileFormatter;
@@ -179,6 +180,12 @@ test('every authenticated route has a valid gate; inbound routes use a service k
     same('settings', $routes['PUT']['v1/settings']['gate'], 'settings gate');
     same('approve', $routes['GET']['v1/payout-batches/{id}/bank-files/{fileId}']['gate'], 'bank file download (full account numbers)');
     same('edit', $routes['GET']['v1/tds-register/export']['gate'], 'TDS export (full PAN)');
+    same('view', $routes['GET']['v1/bank-accounts']['gate'], 'every role lists company bank accounts (masked)');
+    foreach (['POST v1/bank-accounts', 'PUT v1/bank-accounts/{id}', 'POST v1/bank-accounts/{id}/default',
+              'POST v1/bank-accounts/{id}/deactivate', 'POST v1/bank-accounts/{id}/activate'] as $route) {
+        [$m, $p] = explode(' ', $route);
+        same('settings', $routes[$m][$p]['gate'] ?? null, "{$route}: finance_admin only");
+    }
 });
 
 $keyHex = str_repeat('ab', 32);
@@ -327,4 +334,52 @@ test('settings validation', function (): void {
         SettingsService::validate(['tds_rate_percent' => '2', 'gst_mode' => 'inclusive', 'four_eyes_enabled' => false, 'payment_mode' => 'imps']), 'normalised');
     $e = throwsApi(422, static fn () => SettingsService::validate(['tds_rate_percent' => '45', 'gst_mode' => 'sometimes', 'bogus' => 1, 'debit_account_number' => 'abc']), 'invalid settings');
     same(['tds_rate_percent', 'gst_mode', 'bogus', 'debit_account_number'], array_keys($e->errors()), 'each invalid key reported');
+    check(str_contains((string) $e->errors()['debit_account_number'], 'Bank accounts'), 'the old debit account key points to Bank accounts');
+    $e = throwsApi(422, static fn () => SettingsService::validate(['debit_account_number' => '123456789012']), 'debit account can no longer be set');
+    check(isset($e->errors()['debit_account_number']), 'even a valid number is refused');
+    same(false, array_key_exists('debit_account_number', SettingsService::DEFAULTS), 'not a setting any more');
+});
+
+test('company bank account validation: IFSC, 6–18 digits, confirmation, required fields', function (): void {
+    $ok = [
+        'label' => ' HDFC  current ', 'bank_name' => 'HDFC Bank', 'account_holder' => 'Aicountly Technologies Pvt Ltd',
+        'account_number' => '1234 5678 9012', 'account_number_confirm' => '123456789012', 'ifsc' => 'hdfc0001234',
+        'branch' => '', 'account_type' => 'current', 'bank_file_format' => '',
+    ];
+    $v = CompanyBankAccountService::validate($ok, null);
+    same(['HDFC current', '123456789012', 'HDFC0001234', null, null, false], [$v['label'], $v['account_number'], $v['ifsc'], $v['branch'], $v['bank_file_format'], $v['is_default']], 'normalised');
+    same('current', CompanyBankAccountService::validate(array_diff_key($ok, ['account_type' => 1]), null)['account_type'], 'type defaults to current');
+    same('icici_hdfc_style_csv', CompanyBankAccountService::validate(['bank_file_format' => 'icici_hdfc_style_csv'] + $ok, null)['bank_file_format'], 'format override');
+    same(true, CompanyBankAccountService::validate(['is_default' => true] + $ok, null)['is_default'], 'make default on create');
+
+    $e = throwsApi(422, static fn () => CompanyBankAccountService::validate([
+        'label' => '', 'bank_name' => '', 'account_holder' => ' ', 'account_number' => '12345', 'account_number_confirm' => '12345',
+        'ifsc' => 'HDFC1234567', 'account_type' => 'loan', 'bank_file_format' => 'swift',
+    ], null), 'everything wrong');
+    same(['label', 'bank_name', 'account_holder', 'ifsc', 'account_type', 'bank_file_format', 'account_number'], array_keys($e->errors()), 'each problem reported');
+    check(str_contains((string) $e->errors()['account_number'], '6 to 18 digits'), 'digits message');
+    throwsApi(422, static fn () => CompanyBankAccountService::validate(['account_number' => '1234567890123456789', 'account_number_confirm' => '1234567890123456789'] + $ok, null), '19 digits');
+    throwsApi(422, static fn () => CompanyBankAccountService::validate(['account_number' => '12345678901A'] + $ok, null), 'letters');
+    $e = throwsApi(422, static fn () => CompanyBankAccountService::validate(['account_number_confirm' => '123456789013'] + $ok, null), 'confirmation differs');
+    same(['account_number_confirm'], array_keys($e->errors()), 'confirmation error');
+    throwsApi(422, static fn () => CompanyBankAccountService::validate(array_diff_key($ok, ['account_number' => 1]), null), 'number required on create');
+    foreach (['SBIN0001234' => true, 'SBIN1001234' => false, 'SBI00001234' => false, 'SBIN000123' => false, 'ICIC0ABC12D' => true] as $ifsc => $valid) {
+        same($valid, (bool) preg_match(CompanyBankAccountService::IFSC_PATTERN, $ifsc), "IFSC {$ifsc}");
+    }
+
+    // Edit: merged over the stored row; the number is optional; the row adopted from the old setting must be completed.
+    $stored = ['label' => 'Primary account', 'bank_name' => null, 'account_holder' => '', 'ifsc' => null, 'branch' => null,
+        'account_type' => 'current', 'bank_file_format' => null];
+    $e = throwsApi(422, static fn () => CompanyBankAccountService::validate(['label' => 'Main'], $stored), 'adopted row must be completed on edit');
+    same(['bank_name', 'account_holder', 'ifsc'], array_keys($e->errors()), 'missing details named');
+    $v = CompanyBankAccountService::validate(['bank_name' => 'HDFC Bank', 'account_holder' => 'Aicountly', 'ifsc' => 'HDFC0001234'], $stored);
+    same(['Primary account', null, null], [$v['label'], $v['account_number'], $v['bank_file_format']], 'number kept, other fields merged');
+    same(false, CompanyBankAccountService::validate(['is_default' => true, 'bank_name' => 'B', 'account_holder' => 'A', 'ifsc' => 'HDFC0001234'], $stored)['is_default'], 'default is not changed by an edit');
+    throwsApi(422, static fn () => CompanyBankAccountService::validate(['account_number' => '99887766', 'bank_name' => 'B', 'account_holder' => 'A', 'ifsc' => 'HDFC0001234'], $stored), 'new number needs the confirmation');
+
+    $pub = CompanyBankAccountService::publicRow(['id' => 3, 'label' => 'L', 'bank_name' => null, 'account_holder' => '', 'account_number_last4' => '9012',
+        'account_number_hash' => 'h', 'ifsc' => null, 'branch' => null, 'account_type' => 'od', 'bank_file_format' => 'icici_hdfc_style_csv',
+        'is_default' => true, 'active' => true, 'source' => 'legacy_setting', 'created_by' => 'x', 'created_at' => 'now', 'updated_by' => null, 'updated_at' => 'now']);
+    same(['XXXXXX9012', true, 'Overdraft (OD)'], [$pub['account_number_masked'], $pub['incomplete'], $pub['account_type_label']], 'public row masked, flagged incomplete');
+    same(false, array_key_exists('account_number_hash', $pub) || array_key_exists('account_number_enc', $pub), 'no hash or ciphertext in the API shape');
 });

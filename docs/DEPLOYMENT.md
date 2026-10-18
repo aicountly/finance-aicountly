@@ -179,7 +179,11 @@ Finance. Finance never moves money:
 4. **Bank file** — the approver generates the bulk-upload CSV (generic NEFT/IMPS,
    or the ICICI/HDFC-style layout — **confirm that format with your bank before
    the first upload**), downloads it (checksum shown and audited) and uploads it
-   to the bank portal by hand. Requires the debit account in Settings.
+   to the bank portal by hand. The file debits a **company bank account**
+   (Settings → Bank accounts): the default one is preselected, the approver can
+   pick another active one; an account's own file format is preselected too
+   (else the Settings default). Refused while no account is active. The batch
+   view shows which account (label + last four digits) each file debits.
 5. **Payment results** — the approver records a UTR per item, or uploads the
    bank's response CSV (preview first, then apply). Only then is an item `paid`;
    nothing is ever marked paid without a UTR (also a database constraint).
@@ -203,7 +207,31 @@ Migrations live in `server-php/database/migrations/NNN_name.sql`, are applied in
 order (each in a transaction) and recorded in `schema_migrations` with a
 checksum; an applied migration whose file changed is refused — add a new file.
 Current: `001_payouts` (settings, payees, payout_batches, payout_items,
-payout_adjustments, tds_ledger, bank_files, audit_log, outbox).
+payout_adjustments, tds_ledger, bank_files, audit_log, outbox) and
+`002_company_bank_accounts` (company debit accounts; `bank_files.bank_account_id`).
+
+`002` replaces the single setting `debit_account_number`. Right after applying it,
+`bin/migrate.php` moves a non-empty value of that setting into a first account
+**"Primary account"** (the default), encrypted with `FINANCE_DATA_KEY`, audited,
+and blanks the setting so the number is no longer stored in clear. Its bank name,
+IFSC and holder are unknown, so the account shows *Details incomplete* until a
+finance admin edits it. If `FINANCE_DATA_KEY` is not set at migrate time the move
+waits (a notice is printed) and happens on first use once the key is set.
+`GET /api/v1/settings` still answers `debit_account_number`, read-only and masked
+(the default account); `PUT` refuses it.
+
+### Company bank accounts
+
+Settings → Bank accounts (`/api/v1/bank-accounts`): every Finance role sees the
+list with numbers masked (`XXXXXX` + last four — also for finance admins; the full
+number appears only inside a generated bank file). Finance admins add, edit,
+make default, deactivate and re-activate accounts: label, bank name, account
+holder, account number (6–18 digits, typed twice), IFSC, branch, account type
+(current / savings / OD / CC) and an optional bank file format. Exactly one active
+account is the default (enforced in the database). Deactivating the default while
+another account is active needs a new default; deactivating the only account is
+allowed, after which bank files are refused until one is active. Every change is
+in the audit log (masked).
 
 Back up the database **and** `FINANCE_DATA_KEY` together: without the key the
 stored PANs, GSTINs and account numbers cannot be decrypted.
@@ -249,9 +277,13 @@ every check is true.
    payment results), `accountant` (review drafts, TDS export), `finance_admin`
    (everything + Settings), `finance_viewer` (read-only). Four-eyes needs at
    least two people who can approve or prepare.
-7. As a finance admin, open Settings: set the **debit account number**, check
-   the bank file format and payment mode, and confirm the tax settings below
-   with your CA.
+7. As a finance admin, open Settings: **add the company bank account in
+   Settings → Bank accounts** (bank name, holder, account number, IFSC, type; the
+   first one becomes the default — add more if payouts are paid from several
+   accounts). If the old *debit account number* setting was filled in, it is
+   already there as "Primary account": open it and add the bank name, IFSC and
+   holder. Check the bank file format (per account or the Settings default) and
+   payment mode, and confirm the tax settings below with your CA.
 8. Before the first real upload, send a one-line test file to your bank (or
    compare against your bank's own template) to confirm the column layout.
 

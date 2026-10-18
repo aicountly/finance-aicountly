@@ -4,11 +4,17 @@ declare(strict_types=1);
 require_once dirname(__DIR__) . '/BaseController.php';
 
 use App\Database\Database;
+use App\Services\CompanyBankAccountService;
 use App\Services\FinanceAccessPolicy;
 use App\Services\Payouts\BankFileFormatter;
 use App\Services\SettingsService;
 
-/** GET v1/settings (view gate; debit account masked unless finance_admin) · PUT v1/settings (settings gate). */
+/**
+ * GET v1/settings (view gate) · PUT v1/settings (settings gate).
+ *
+ * `values.debit_account_number` is kept for older clients: read-only, always masked ("XXXXXX9012"),
+ * taken from the default company bank account (v1/bank-accounts). Writing it is refused.
+ */
 class SettingsController extends BaseController
 {
     public function show(array $params, array $body): never
@@ -25,14 +31,11 @@ class SettingsController extends BaseController
     /** @param array<string,string> $values */
     private function payload(array $values): array
     {
-        $admin = FinanceAccessPolicy::allows($this->roles(), 'settings');
-        if (!$admin && $values['debit_account_number'] !== '') {
-            $values['debit_account_number'] = 'XXXXXX' . substr($values['debit_account_number'], -4);
-        }
+        $values[CompanyBankAccountService::LEGACY_SETTING] = (new CompanyBankAccountService(Database::pdo()))->defaultMasked();
 
         return [
             'values'   => $values,
-            'can_edit' => $admin,
+            'can_edit' => FinanceAccessPolicy::allows($this->roles(), 'settings'),
             'options'  => [
                 'gst_mode'         => SettingsService::GST_MODES,
                 'payment_mode'     => SettingsService::PAYMENT_MODES,

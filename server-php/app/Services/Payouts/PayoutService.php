@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace App\Services\Payouts;
 
 use App\Services\AuditLog;
+use App\Services\CompanyBankAccountService;
 use App\Services\DataVault;
 use App\Services\SettingsService;
 use App\Support\ApiException;
@@ -611,7 +612,11 @@ final class PayoutService
      * (before any payment result is recorded) needs a reason and supersedes the
      * previous file — upload only the latest one.
      *
-     * @param array<string,mixed> $input {format?, value_date?, reason?}
+     * The file debits a company bank account (Settings → Bank accounts): `bank_account_id`, or the
+     * default when it is left out; refused when no account is active. Format: `format` if given, else
+     * the account's own bank_file_format, else the Settings default.
+     *
+     * @param array<string,mixed> $input {bank_account_id?, format?, value_date?, reason?}
      * @param array<string,mixed> $actor
      * @return array<string,mixed> file metadata
      */
@@ -625,16 +630,16 @@ final class PayoutService
                 throw ApiException::conflict("A bank file can only be generated for an approved batch (this one is {$batch['status']}).");
             }
             $settings = $this->settings();
-            $format   = is_string($input['format'] ?? null) && $input['format'] !== '' ? $input['format'] : $settings['bank_file_format'];
-            if (!isset(BankFileFormatter::FORMATS[$format])) {
-                throw ApiException::validation('Unknown bank file format.', ['format' => 'One of: ' . implode(', ', array_keys(BankFileFormatter::FORMATS))]);
-            }
             $valueDate = $input['value_date'] ?? FiscalYear::today();
             if (!FiscalYear::isDate($valueDate) || $valueDate < FiscalYear::today()) {
                 throw ApiException::validation('value_date must be today or later (YYYY-MM-DD).', ['value_date' => 'Invalid.']);
             }
-            if ($settings['debit_account_number'] === '') {
-                throw ApiException::validation('Set the debit account number in Settings before generating a bank file.');
+            $debit  = (new CompanyBankAccountService($this->pdo, $vault))->forBankFile($input['bank_account_id'] ?? null);
+            $format = is_string($input['format'] ?? null) && $input['format'] !== ''
+                ? $input['format']
+                : ($debit['bank_file_format'] ?? $settings['bank_file_format']);
+            if (!isset(BankFileFormatter::FORMATS[$format])) {
+                throw ApiException::validation('Unknown bank file format.', ['format' => 'One of: ' . implode(', ', array_keys(BankFileFormatter::FORMATS))]);
             }
 
             $items = $this->batchItems($batchId, true);
@@ -661,7 +666,7 @@ final class PayoutService
             $file = BankFileFormatter::build($rows, [
                 'format'           => $format,
                 'payment_mode'     => $settings['payment_mode'],
-                'debit_account'    => $settings['debit_account_number'],
+                'debit_account'    => $debit['number'],
                 'value_date'       => $valueDate,
                 'narration_prefix' => $settings['narration_prefix'],
                 'batch_ref'        => (string) $batch['batch_ref'],
@@ -671,11 +676,13 @@ final class PayoutService
                 $this->pdo->prepare("UPDATE bank_files SET superseded = true WHERE batch_id = ? AND kind = 'payment' AND NOT superseded")->execute([$batchId]);
             }
             $ins = $this->pdo->prepare(
-                "INSERT INTO bank_files (batch_id, kind, format, filename, content_enc, sha256, item_count, total_amount, note, created_by)
-                 VALUES (?, 'payment', ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, created_at",
+                "INSERT INTO bank_files (batch_id, kind, format, filename, content_enc, sha256, item_count, total_amount, note, created_by,
+                                         bank_account_id, debit_account_label, debit_account_last4)
+                 VALUES (?, 'payment', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, created_at",
             );
             $ins->execute([$batchId, $format, $file['filename'], $vault->encrypt($file['content']), $file['sha256'], $file['item_count'],
-                Money::format($file['total']), $regenerate ? 'Regenerated: ' . $reason : null, $actor['actor']]);
+                Money::format($file['total']), $regenerate ? 'Regenerated: ' . $reason : null, $actor['actor'],
+                $debit['id'], $debit['label'], $debit['last4']]);
             $row = $ins->fetch();
             if (!$regenerate) {
                 PayoutStateMachine::assertBatch((string) $batch['status'], 'file_generated');
@@ -691,6 +698,7 @@ final class PayoutService
                 'item_count'     => $file['item_count'],
                 'total_amount'   => Money::format($file['total']),
                 'value_date'     => $valueDate,
+                'debit_account'  => ['id' => $debit['id'], 'label' => $debit['label'], 'account_number_masked' => DataVault::mask($debit['last4'])],
                 'created_at'     => $row['created_at'],
             ];
             $this->audit->record($actor, $regenerate ? 'bank_file.regenerated' : 'bank_file.generated', 'payout_batch', $batchId,

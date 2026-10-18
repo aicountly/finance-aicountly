@@ -13,6 +13,10 @@ use App\Support\Money;
  *
  * Changing a setting affects batches computed afterwards (new drafts, and drafts
  * someone recalculates). Approved batches keep the figures that were approved.
+ *
+ * The company's debit account is no longer a setting: it lives in company_bank_accounts
+ * (CompanyBankAccountService, Settings → Bank accounts). The old key `debit_account_number`
+ * cannot be written any more; GET v1/settings still answers it, masked, from the default account.
  */
 final class SettingsService
 {
@@ -24,7 +28,6 @@ final class SettingsService
         'minimum_payout'       => '0.00',
         'bank_file_format'     => 'generic_neft_csv',
         'payment_mode'         => 'NEFT',
-        'debit_account_number' => '',
         'narration_prefix'     => 'AICOUNTLY COMMISSION',
         'four_eyes_enabled'    => 'true',
     ];
@@ -54,8 +57,7 @@ final class SettingsService
      *
      * @param array<string,string> $s
      * @return array{tds_rate_bp:int, tds_threshold:int, gst_mode:string, gst_rate_bp:int, minimum_payout:int,
-     *               bank_file_format:string, payment_mode:string, debit_account_number:string,
-     *               narration_prefix:string, four_eyes_enabled:bool}
+     *               bank_file_format:string, payment_mode:string, narration_prefix:string, four_eyes_enabled:bool}
      */
     public static function typed(array $s): array
     {
@@ -67,7 +69,6 @@ final class SettingsService
             'minimum_payout'       => Money::parse($s['minimum_payout']) ?? 0,
             'bank_file_format'     => $s['bank_file_format'],
             'payment_mode'         => $s['payment_mode'],
-            'debit_account_number' => $s['debit_account_number'],
             'narration_prefix'     => $s['narration_prefix'],
             'four_eyes_enabled'    => $s['four_eyes_enabled'] === 'true',
         ];
@@ -84,6 +85,10 @@ final class SettingsService
         $errors = [];
         $out    = [];
         foreach ($input as $key => $value) {
+            if ($key === CompanyBankAccountService::LEGACY_SETTING) {
+                $errors[$key] = 'The debit account is managed in Settings → Bank accounts now (v1/bank-accounts).';
+                continue;
+            }
             if (!array_key_exists((string) $key, self::DEFAULTS)) {
                 $errors[$key] = 'Unknown setting.';
                 continue;
@@ -134,8 +139,6 @@ final class SettingsService
                 return array_key_exists($str, BankFileFormatter::FORMATS)
                     ? [$str, null]
                     : [null, 'One of: ' . implode(', ', array_keys(BankFileFormatter::FORMATS)) . '.'];
-            case 'debit_account_number':
-                return ($str === '' || preg_match('/^[0-9]{6,20}$/', $str)) ? [$str, null] : [null, '6–20 digits (or empty).'];
             case 'narration_prefix':
                 return preg_match('/^[A-Za-z0-9 .\-\/]{0,30}$/', $str) ? [$str, null] : [null, 'Up to 30 letters, digits, spaces or . - /'];
             case 'four_eyes_enabled':
@@ -174,12 +177,6 @@ final class SettingsService
                 $changedAfter[$key]  = $value;
             }
             if ($changedAfter !== []) {
-                // The audit log is readable by every Finance role: mask the company's debit account there too.
-                foreach (['changedBefore', 'changedAfter'] as $snap) {
-                    if (isset(${$snap}['debit_account_number']) && ${$snap}['debit_account_number'] !== '') {
-                        ${$snap}['debit_account_number'] = 'XXXXXX' . substr(${$snap}['debit_account_number'], -4);
-                    }
-                }
                 (new AuditLog($this->pdo))->record($actor, 'settings.updated', 'settings', null, $changedBefore, $changedAfter);
             }
             $this->pdo->commit();
