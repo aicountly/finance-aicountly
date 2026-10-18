@@ -22,12 +22,34 @@ function base64url_decode(string $data): string
 }
 
 /**
+ * A blank secret makes every signature forgeable (anyone can compute the HMAC),
+ * so Finance neither issues nor accepts tokens without one. Secrets shorter than
+ * 32 characters still work but are logged: /health reports them as misconfigured.
+ */
+function jwt_secret_usable(string $secret): bool
+{
+    $secret = trim($secret);
+    if ($secret === '') {
+        return false;
+    }
+    if (strlen($secret) < 32) {
+        error_log('[finance] JWT_SECRET is shorter than 32 characters: replace it with a long random value.');
+    }
+
+    return true;
+}
+
+/**
  * Create a signed JWT string.
  *
  * @param array<string,mixed> $payload
  */
 function jwt_encode(array $payload, string $secret): string
 {
+    if (!jwt_secret_usable($secret)) {
+        throw new \RuntimeException('JWT_SECRET is not set; Finance cannot sign tokens.');
+    }
+
     $header = base64url_encode(json_encode([
         'alg' => 'HS256',
         'typ' => 'JWT',
@@ -49,6 +71,10 @@ function jwt_encode(array $payload, string $secret): string
  */
 function jwt_decode(string $token, string $secret): array|false
 {
+    if (!jwt_secret_usable($secret)) {
+        return false;
+    }
+
     $parts = explode('.', $token);
     if (count($parts) !== 3) {
         return false;

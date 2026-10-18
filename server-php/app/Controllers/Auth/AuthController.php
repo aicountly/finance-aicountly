@@ -198,6 +198,10 @@ class AuthController extends BaseController
     {
         $user = (array) ($introspectData['user'] ?? []);
         $authConfig = require __DIR__ . '/../../Config/Auth.php';
+        if (!jwt_secret_usable((string) $authConfig['JWT_SECRET'])) {
+            error_log('[finance] Sign-in refused: JWT_SECRET is not set.');
+            json_error('Finance sign-in is not configured. Ask the administrator to set JWT_SECRET.', [], 503);
+        }
         $ttlHours = $authConfig['TOKEN_TTL_HOURS'];
         $consoleUserId = (int) ($introspectData['console_user_id'] ?? 0);
 
