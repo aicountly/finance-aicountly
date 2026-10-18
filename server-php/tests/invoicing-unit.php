@@ -177,6 +177,8 @@ test('AIC-S2S v1: canonical form and signature (docs/INVOICING.md worked example
         . 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', $canonical, 'canonical string');
     $secret = 'manage-to-finance-example-secret-0123456789';
     same('v1=' . hash_hmac('sha256', $canonical, $secret), AicS2s::signature($secret, $canonical), 'v1=hex HMAC-SHA256');
+    same('v1=2c93e407965eea0f40532c26a36b978912a090d845d7a662983489139110684b', AicS2s::signature($secret, $canonical),
+        'the worked example in docs/INVOICING.md (also reproducible with openssl dgst -sha256 -hmac)');
     same('FINANCE_INBOUND_MANAGE_SECRET_MANAGE_READ_2026_10', AicS2s::secretEnvName('manage', 'manage-read-2026-10'), 'secret env name');
     same('FINANCE_INBOUND_MANAGE_SCOPE_MANAGE_READ_2026_10', AicS2s::scopeEnvName('manage', 'manage-read-2026-10'), 'scope env name');
 });

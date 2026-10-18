@@ -58,8 +58,9 @@ server, and only on the server.
 
 Users and roles are not stored here — `console.aicountly.org` is the sole
 identity provider (see [Sign-in (Console SSO)](../README.md#sign-in-console-sso)).
-The API's PostgreSQL database holds the weekly seller payout ledger only
-(see [Weekly seller payouts](#weekly-seller-payouts) below).
+The API's PostgreSQL database holds the weekly seller payout ledger
+(see [Weekly seller payouts](#weekly-seller-payouts) below) and the subscription
+invoices (see [Subscription invoicing](#subscription-invoicing)).
 
 Create the `.env` once by hand — cPanel File Manager or SSH — at
 `<remote root>/api/.env`:
@@ -91,6 +92,10 @@ FINANCE_INBOUND_ENGAGE_KEY=<same value as FINANCE_OUTBOUND_KEY in Engage's .env,
 # and the callback is not delivered (the outbox records the error and retries).
 ENGAGE_API_BASE_URL=https://engage.aicountly.org/api
 ENGAGE_FINANCE_KEY=<same value as ENGAGE_INBOUND_FINANCE_KEY in Engage's .env, ≥ 32 chars>
+
+# Subscription invoicing (optional — dormant until set; docs/INVOICING.md)
+FINANCE_INBOUND_MANAGE_SECRET_<KEYID>=<AIC-S2S secret shared with Manage, ≥ 32 bytes>
+GOTENBERG_URL=<PDF service base URL>
 ```
 
 **`CONSOLE_API_TOKEN` is required in production.** Finance has no refresh
@@ -207,8 +212,11 @@ Migrations live in `server-php/database/migrations/NNN_name.sql`, are applied in
 order (each in a transaction) and recorded in `schema_migrations` with a
 checksum; an applied migration whose file changed is refused — add a new file.
 Current: `001_payouts` (settings, payees, payout_batches, payout_items,
-payout_adjustments, tds_ledger, bank_files, audit_log, outbox) and
-`002_company_bank_accounts` (company debit accounts; `bank_files.bank_account_id`).
+payout_adjustments, tds_ledger, bank_files, audit_log, outbox),
+`002_company_bank_accounts` (company debit accounts; `bank_files.bank_account_id`)
+and `003_invoicing` (seller profile, document series, offline payments, invoices,
+credit notes, stored PDFs, AIC-S2S nonces / rate windows / access log — unused
+until invoicing is configured).
 
 `002` replaces the single setting `debit_account_number`. Right after applying it,
 `bin/migrate.php` moves a non-empty value of that setting into a first account
@@ -260,7 +268,9 @@ delivered.
 
 `GET /api/health` adds booleans `database` (reachable and migrated),
 `data_key`, `engage_inbound` and `engage_callbacks`; `status` is `ok` only when
-every check is true.
+every check is true. Invoicing reports separately under `invoicing`
+(`status` dormant / incomplete / ready and its own booleans) and never changes
+the top-level `status`.
 
 ### Operator steps after the first deploy
 
@@ -312,3 +322,26 @@ The defaults are a starting point, not advice:
 - Form 26Q: the TDS register gives deductee PAN, name, deductee code (01
   company / 02 other), section, amount paid, rate, TDS and date per payment;
   challan details are added in your filing software.
+
+## Subscription invoicing
+
+Dormant until configured; nothing changes for payouts. Full description, the AIC-S2S
+signature scheme with a worked example and the runbook: [INVOICING.md](INVOICING.md).
+
+To activate after a deploy (migration `003_invoicing` is applied by the deploy's
+`bin/migrate.php` step):
+
+1. Agree a key id and a ≥ 32-byte secret with the Manage operator and set
+   `FINANCE_INBOUND_MANAGE_SECRET_<KEYID>` in `api/.env` (key id upper-cased,
+   other characters → `_`); outside production also `FINANCE_S2S_ENVIRONMENT`.
+2. Set `GOTENBERG_URL` (and `GOTENBERG_AUTH_MODE` + credentials if the PDF service
+   needs them).
+3. As a finance admin: Settings → Invoicing → save the seller profile, then add the
+   FY's tax invoice and credit note series. Add next FY's series before 1 April.
+4. Add the cron line (safe before invoicing is configured):
+
+   ```cron
+   */5 * * * * php /home/<user>/public_html/api/bin/invoicing-cron.php >> /home/<user>/logs/finance-invoicing.log 2>&1
+   ```
+
+5. Check `GET /api/health` → `invoicing.status` is `ready`.
