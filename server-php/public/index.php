@@ -9,51 +9,18 @@ declare(strict_types=1);
  * then dispatches to the controller.
  *
  * Finance keeps no local user database — console.aicountly.org is the sole
- * identity provider (see AUTH_INTEGRATION.md in console-react-app), so this
- * API has no session table and no DB config to bootstrap.
+ * identity provider (see AUTH_INTEGRATION.md in console-react-app). The
+ * PostgreSQL database (FINANCE_DB_*) holds the payout ledger only; routes that
+ * need it open it lazily (App\Database\Database), so health and SSO keep
+ * working when it is not configured.
  */
 
 /* ------------------------------------------------------------------
  * 1. Bootstrap – Load .env
  * ------------------------------------------------------------------ */
 
-(function (): void {
-    $envFile = dirname(__DIR__) . '/.env';
-    if (!is_file($envFile)) {
-        return;
-    }
-
-    $lines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-    if ($lines === false) {
-        return;
-    }
-
-    foreach ($lines as $line) {
-        $line = trim($line);
-
-        if ($line === '' || str_starts_with($line, '#')) {
-            continue;
-        }
-
-        $eqPos = strpos($line, '=');
-        if ($eqPos === false) {
-            continue;
-        }
-
-        $key   = trim(substr($line, 0, $eqPos));
-        $value = trim(substr($line, $eqPos + 1));
-
-        if (
-            (str_starts_with($value, '"') && str_ends_with($value, '"')) ||
-            (str_starts_with($value, "'") && str_ends_with($value, "'"))
-        ) {
-            $value = substr($value, 1, -1);
-        }
-
-        $_ENV[$key] = $value;
-        putenv("{$key}={$value}");
-    }
-})();
+require_once dirname(__DIR__) . '/app/bootstrap.php';
+finance_load_env(dirname(__DIR__) . '/.env');
 
 /* ------------------------------------------------------------------
  * 2. Error reporting based on environment
@@ -77,6 +44,7 @@ require_once dirname(__DIR__) . '/app/Helpers/ResponseHelper.php';
 require_once dirname(__DIR__) . '/app/Helpers/JwtHelper.php';
 require_once dirname(__DIR__) . '/app/Filters/CorsFilter.php';
 require_once dirname(__DIR__) . '/app/Filters/AuthFilter.php';
+require_once dirname(__DIR__) . '/app/Filters/ServiceKeyFilter.php';
 
 /* ------------------------------------------------------------------
  * 4. CORS
@@ -140,8 +108,19 @@ try {
     global $currentUser;
     $currentUser = null;
 
+    if (!empty($matchedRoute['inbound'])) {
+        ServiceKeyFilter::handle((string) $matchedRoute['inbound']);
+    }
+
     if (!empty($matchedRoute['auth'])) {
         AuthFilter::handle();
+
+        // Role gate (FinanceAccessPolicy::GATES). An authenticated route
+        // without a gate is only v1/auth/me — tests/run.php enforces that.
+        if (isset($matchedRoute['gate'])
+            && !\App\Services\FinanceAccessPolicy::allows((array) ($currentUser['roles'] ?? []), (string) $matchedRoute['gate'])) {
+            json_forbidden(\App\Services\FinanceAccessPolicy::MSG_ROLE_FORBIDDEN);
+        }
     }
 
     $controllerRel  = str_replace('\\', '/', $matchedRoute['controller']);
@@ -182,6 +161,9 @@ try {
     }
 
     $controller->$method($routeParams, $body);
+} catch (\App\Support\ApiException $e) {
+    // Written for the caller (validation, conflict, four-eyes, not configured): shown in every environment.
+    json_error($e->getMessage(), $e->errors(), $e->status());
 } catch (\Throwable $e) {
     $code    = exception_http_status($e);
     $message = exception_public_message($e, $appEnv);

@@ -6,11 +6,18 @@ declare(strict_types=1);
  *
  *   php server-php/tests/run.php
  *
- * 1. Unit: FinanceAccessPolicy and AuthzCache.
+ * 1. Unit: FinanceAccessPolicy, AuthzCache and the payout rules (payouts-unit.php:
+ *    money, FY, TDS/GST, state machine, four-eyes, encryption, bank files, routes).
  * 2. HTTP: the real front controller (public/index.php) under `php -S`,
  *    talking to a stub Console (tests/fake-console.php) also under `php -S`.
  *    One API instance has CONSOLE_API_TOKEN set (roles re-validated per
  *    request), one does not (warn + trust the token).
+ * 3. Payouts against PostgreSQL (payouts-db.php): its own database `finance_test`
+ *    (dropped afterwards), the API under `php -S`, and a stub Engage
+ *    (tests/fake-engage.php) for the status outbox. Connection: FINANCE_TEST_DB_HOST
+ *    / _PORT / _USER / _PASSWORD (default 127.0.0.1:5432 postgres/postgres). If
+ *    PostgreSQL is unreachable the section is skipped with a warning, unless
+ *    FINANCE_TESTS_REQUIRE_DB=1 (then it fails).
  *
  * Exits non-zero on the first failing assertion.
  */
@@ -20,6 +27,7 @@ if (PHP_SAPI !== 'cli') {
     exit;
 }
 
+require_once __DIR__ . '/../app/bootstrap.php';
 require_once __DIR__ . '/../app/Helpers/JwtHelper.php';
 require_once __DIR__ . '/../app/Services/FinanceAccessPolicy.php';
 require_once __DIR__ . '/../app/Services/AuthzCache.php';
@@ -80,7 +88,7 @@ test('empty app_roles is refused even with an active grant', function () use ($i
 
 test('app superadmin holds the whole catalog', function () use ($identity): void {
     $d = FinanceAccessPolicy::rolesFromIdentity($identity(['app_roles' => [], 'app_superadmin' => true]));
-    same(['finance_admin', 'finance_viewer'], $d['roles'], 'roles');
+    same(['finance_admin', 'payout_approver', 'accountant', 'finance_viewer'], $d['roles'], 'roles');
     same(true, $d['app_superadmin'], 'app_superadmin');
 });
 
@@ -99,6 +107,8 @@ test('user-access revocations', function (): void {
     same(null, FinanceAccessPolicy::rolesFromUserAccess(['app_access' => false] + $ok), 'no app access');
     same(null, FinanceAccessPolicy::rolesFromUserAccess(['app_roles' => []] + $ok), 'no roles');
 });
+
+require __DIR__ . '/payouts-unit.php';
 
 $cacheDir = sys_get_temp_dir() . '/finance-tests-' . bin2hex(random_bytes(4));
 $_ENV['FINANCE_AUTHZ_CACHE_DIR'] = $cacheDir . '/unit';
@@ -217,24 +227,29 @@ function clearCache(): void
     exec('rm -rf ' . escapeshellarg($cacheDir . '/api') . ' ' . escapeshellarg($cacheDir . '/api-unconfigured'));
 }
 
-/** @return array{status:int, headers:string, json:?array} */
-function http(string $method, string $url, array $headers = []): array
+/** @return array{status:int, headers:string, json:?array, body:string} */
+function http(string $method, string $url, array $headers = [], ?string $body = null): array
 {
     $ch = curl_init($url);
-    curl_setopt_array($ch, [
+    $opts = [
         CURLOPT_CUSTOMREQUEST  => $method,
         CURLOPT_HTTPHEADER     => $headers,
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_HEADER         => true,
         CURLOPT_FOLLOWLOCATION => false,
-        CURLOPT_TIMEOUT        => 10,
-    ]);
+        CURLOPT_TIMEOUT        => 20,
+    ];
+    if ($body !== null) {
+        $opts[CURLOPT_POSTFIELDS] = $body;
+    }
+    curl_setopt_array($ch, $opts);
     $raw    = (string) curl_exec($ch);
     $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $hsize  = (int) curl_getinfo($ch, CURLINFO_HEADER_SIZE);
     curl_close($ch);
+    $text = substr($raw, $hsize);
 
-    return ['status' => $status, 'headers' => substr($raw, 0, $hsize), 'json' => json_decode(substr($raw, $hsize), true)];
+    return ['status' => $status, 'headers' => substr($raw, 0, $hsize), 'json' => json_decode($text, true), 'body' => $text];
 }
 
 function identityBody(array $extra = []): array
@@ -326,7 +341,7 @@ test('old Console payload (no app_roles): only a global superadmin gets in', fun
 
     stub(['exchange' => ['status' => 200, 'body' => identityBody(['global_superadmin' => true])]]);
     $c = claims((string) (ssoCallback($api)['query']['token'] ?? ''));
-    same(['finance_admin', 'finance_viewer'], $c['roles'], 'gsa roles');
+    same(FinanceAccessPolicy::CATALOG, $c['roles'], 'gsa roles');
     same(true, $c['gsa'], 'gsa');
 });
 
@@ -409,11 +424,17 @@ test('GET /api/health reports Console role sync (booleans only)', function () us
     $on = http('GET', $api . '/api/health');
     same(200, $on['status'], 'status');
     same(true, $on['json']['data']['checks']['console_role_sync'] ?? null, 'configured API: console_role_sync true');
-    same('ok', $on['json']['data']['status'] ?? null, 'status ok');
+    // This instance has no payout database / keys: honest "misconfigured" (payouts-db.php checks the configured one).
+    same(false, $on['json']['data']['checks']['database'] ?? null, 'no FINANCE_DB_*: database false');
+    same(false, $on['json']['data']['checks']['data_key'] ?? null, 'no FINANCE_DATA_KEY: data_key false');
+    same(false, $on['json']['data']['checks']['engage_inbound'] ?? null, 'no inbound key: engage_inbound false');
+    same('misconfigured', $on['json']['data']['status'] ?? null, 'payouts unconfigured → misconfigured');
     $off = http('GET', $apiUnconfigured . '/api/health');
     same(false, $off['json']['data']['checks']['console_role_sync'] ?? null, 'no CONSOLE_API_TOKEN: console_role_sync false');
     same('misconfigured', $off['json']['data']['status'] ?? null, 'status misconfigured');
     check(!str_contains(json_encode($on['json']), SERVICE_TOKEN), 'no token in the answer');
 });
+
+require __DIR__ . '/payouts-db.php';
 
 echo "\n{$passed} assertions passed.\n";

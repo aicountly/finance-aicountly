@@ -16,7 +16,7 @@ use App\Services\FinanceAccessPolicy;
  * portal JWT; it never accepts a password.
  *
  * Roles come from Console too (app_code `finance`: finance_admin,
- * finance_viewer). A Console user with no Finance role assigned is refused
+ * payout_approver, accountant, finance_viewer). A Console user with no Finance role assigned is refused
  * with "Access not assigned…" — an active Console grant alone is not enough.
  */
 class AuthController extends BaseController
@@ -126,6 +126,7 @@ class AuthController extends BaseController
             'global_superadmin' => (bool) ($payload['gsa'] ?? false),
             'roles'             => array_values((array) ($payload['roles'] ?? [])),
             'app_superadmin'    => (bool) ($payload['app_superadmin'] ?? false),
+            'gates'             => FinanceAccessPolicy::gatesFor((array) ($payload['roles'] ?? [])),
         ]);
     }
 
@@ -231,6 +232,7 @@ class AuthController extends BaseController
             'global_superadmin' => (bool) ($introspectData['global_superadmin'] ?? false),
             'roles'             => $access['roles'],
             'app_superadmin'    => $access['app_superadmin'],
+            'gates'             => FinanceAccessPolicy::gatesFor($access['roles']),
         ];
     }
 
