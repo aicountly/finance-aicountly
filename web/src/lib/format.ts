@@ -11,6 +11,27 @@ export function inr(amount: string | null | undefined): string {
   return `${negative ? '−' : ''}₹${grouped}.${frac.padEnd(2, '0').slice(0, 2)}`
 }
 
+/** Integer paise → "1234.50" (exact integer arithmetic). */
+export function paiseToRupees(paise: number): string {
+  const negative = paise < 0
+  const abs = Math.abs(paise)
+  const rem = abs % 100
+  return `${negative ? '-' : ''}${(abs - rem) / 100}.${String(rem).padStart(2, '0')}`
+}
+
+/** Integer paise → "₹12,34,567.89". */
+export function inrPaise(paise: number | null | undefined): string {
+  if (paise === null || paise === undefined) return '—'
+  return inr(paiseToRupees(paise))
+}
+
+/** YYYY-MM-DD (or a timestamp) → dd/mm/yyyy, the Indian date format used on invoices. */
+export function dmy(value: string | null | undefined): string {
+  if (!value) return '—'
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(value)
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : value
+}
+
 export function dateOnly(value: string | null | undefined): string {
   if (!value) return '—'
   return value.slice(0, 10)
@@ -37,6 +58,16 @@ const LABELS: Record<string, string> = {
   pending: 'Pending',
   delivered: 'Delivered',
   dead: 'Dead',
+  issued: 'Issued',
+  partially_credited: 'Partially credited',
+  credited: 'Credited',
+  pending_approval: 'Awaiting approval',
+  rejected: 'Rejected',
+  recorded: 'Awaiting verification',
+  verified: 'Verified',
+  not_issued: 'Not issued',
+  blocked_config: 'Blocked: setup missing',
+  blocked_data: 'Blocked: data',
 }
 
 export function statusLabel(status: string): string {
