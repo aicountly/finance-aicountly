@@ -75,6 +75,22 @@ $identity = static fn (array $extra = []): array => $extra + [
     'user'              => ['id' => 77, 'name' => 'Meera', 'email' => 'meera@aicountly.com', 'role' => 'staff'],
 ];
 
+test('a blank JWT_SECRET neither signs nor verifies tokens', function (): void {
+    $header = base64url_encode('{"alg":"HS256","typ":"JWT"}');
+    $body = base64url_encode(json_encode(['sub' => 1, 'email' => 'x@y.z', 'roles' => ['finance_admin'], 'exp' => time() + 60]));
+    $forged = $header . '.' . $body . '.' . base64url_encode(hash_hmac('sha256', "{$header}.{$body}", '', true));
+    same(false, jwt_decode($forged, ''), 'token forged with an empty key is refused');
+    same(false, jwt_decode($forged, '   '), 'whitespace-only key counts as empty');
+    $threw = false;
+    try {
+        jwt_encode(['sub' => 1], '');
+    } catch (\RuntimeException) {
+        $threw = true;
+    }
+    check($threw, 'jwt_encode refuses an empty key');
+    check(is_array(jwt_decode(jwt_encode(['sub' => 1], JWT_SECRET), JWT_SECRET)), 'a real key still round-trips');
+});
+
 test('assigned roles are used, unknown slugs ignored', function () use ($identity): void {
     $d = FinanceAccessPolicy::rolesFromIdentity($identity(['app_roles' => ['finance_viewer', 'build_admin', 'FINANCE_VIEWER']]));
     same(true, $d['allowed'], 'allowed');
@@ -196,6 +212,9 @@ $api = serve($serverRoot . '/public/index.php', $apiEnv + [
 ]);
 $apiUnconfigured = serve($serverRoot . '/public/index.php', $apiEnv + [
     'FINANCE_AUTHZ_CACHE_DIR' => $cacheDir . '/api-unconfigured',
+]);
+$apiNoSecret = serve($serverRoot . '/public/index.php', ['JWT_SECRET' => ''] + $apiEnv + [
+    'FINANCE_AUTHZ_CACHE_DIR' => $cacheDir . '/api-no-secret',
 ]);
 
 function stub(array $answers): void
@@ -418,6 +437,20 @@ test('not configured: token roles trusted; token without roles refused', functio
     same([], consoleRequests('user_access'), 'no lookup');
 
     same(401, me($apiUnconfigured, mintToken([]))['status'], 'pre-roles token');
+});
+
+test('no JWT_SECRET: forged tokens refused and sign-in fails closed', function () use ($apiNoSecret): void {
+    $header = base64url_encode('{"alg":"HS256","typ":"JWT"}');
+    $body = base64url_encode(json_encode([
+        'sub' => 77, 'email' => 'meera@aicountly.com', 'roles' => ['finance_admin'], 'exp' => time() + 3600,
+    ]));
+    $forged = $header . '.' . $body . '.' . base64url_encode(hash_hmac('sha256', "{$header}.{$body}", '', true));
+    same(401, me($apiNoSecret, $forged)['status'], 'token signed with an empty key');
+
+    stub(['introspect' => ['status' => 200, 'body' => identityBody(['app_roles' => ['finance_admin']])]]);
+    $res = http('POST', $apiNoSecret . '/api/v1/auth/console-session', ['Cookie: aicountly_controller_token=console-cookie']);
+    same(503, $res['status'], 'console-session status');
+    check(!isset($res['json']['data']['token']), 'no token issued');
 });
 
 test('GET /api/health reports Console role sync (booleans only)', function () use ($api, $apiUnconfigured): void {
