@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace App\Services\Payouts;
 
+use App\Services\CompanyBankAccountService;
 use App\Services\DataVault;
 use App\Services\FinanceAccessPolicy;
 use App\Services\SettingsService;
@@ -112,7 +113,8 @@ final class PayoutQueries
         }, $items->fetchAll());
 
         $files = $this->pdo->prepare(
-            'SELECT id, kind, format, filename, sha256, item_count, total_amount, superseded, note, created_by, created_at
+            'SELECT id, kind, format, filename, sha256, item_count, total_amount, superseded, note, created_by, created_at,
+                    bank_account_id, debit_account_label, debit_account_last4
                FROM bank_files WHERE batch_id = ? ORDER BY id DESC',
         );
         $files->execute([$id]);
@@ -122,6 +124,13 @@ final class PayoutQueries
             $f['superseded']     = (bool) $f['superseded'];
             $f['format_label']   = BankFileFormatter::FORMATS[$f['format']]['label'] ?? $f['format'];
             $f['confirm_format'] = BankFileFormatter::FORMATS[$f['format']]['confirm_format'] ?? false;
+            // The company account this file debits, as it was when the file was generated (label + last four only).
+            $f['debit_account']  = $f['bank_account_id'] === null ? null : [
+                'id'                    => (int) $f['bank_account_id'],
+                'label'                 => (string) $f['debit_account_label'],
+                'account_number_masked' => DataVault::mask((string) $f['debit_account_last4']),
+            ];
+            unset($f['bank_account_id'], $f['debit_account_label'], $f['debit_account_last4']);
 
             return $f;
         }, $files->fetchAll());
@@ -150,7 +159,10 @@ final class PayoutQueries
         $batch['items']       = $rows;
         $batch['bank_files']  = $fileRows;
         $batch['bank_file_formats'] = BankFileFormatter::FORMATS;
-        $batch['debit_account_configured'] = $settings['debit_account_number'] !== '';
+        $batch['default_bank_file_format'] = $settings['bank_file_format'];
+        // Active company bank accounts (masked) for the generate-file account picker; the default comes first.
+        $batch['bank_accounts'] = (new CompanyBankAccountService($this->pdo))->list(true);
+        $batch['debit_account_configured'] = $batch['bank_accounts'] !== [];
 
         return $batch;
     }

@@ -20,7 +20,7 @@ export const FINANCE_ROLE_LABELS: Record<FinanceRole, string> = {
  * view     every role — dashboards, batches, payees (masked), TDS register, audit log
  * edit     review drafts: submit, hold/unhold, adjust, recalculate; export TDS (full PAN)
  * approve  approve / cancel batches, bank file, record payment results
- * settings payout settings, re-queue dead Engage callbacks
+ * settings payout settings, company bank accounts, re-queue dead Engage callbacks
  */
 export type FinanceGate = 'view' | 'edit' | 'approve' | 'settings'
 

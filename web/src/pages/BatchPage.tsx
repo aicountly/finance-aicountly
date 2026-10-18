@@ -1,4 +1,4 @@
-import { useState, type ChangeEvent, type ReactNode } from 'react'
+import { useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router'
 import { ErrorBanner, FormDialog, Notice, PageHeader, StatusBadge, type DialogField } from '../components/ui'
 import { useApiData } from '../hooks/useApiData'
@@ -26,6 +26,7 @@ export function BatchPage() {
   const id = Number(useParams().id)
   const { data: batch, error, loading, reload } = useApiData(() => payoutsApi.batch(id), [id])
   const [dialog, setDialog] = useState<DialogSpec | null>(null)
+  const [generating, setGenerating] = useState(false)
   const [flash, setFlash] = useState('')
   const [actionError, setActionError] = useState('')
 
@@ -137,7 +138,7 @@ export function BatchPage() {
       ) : null}
       {batch.status === 'in_review' && batch.four_eyes.blocked_reason ? <Notice tone="info">{batch.four_eyes.blocked_reason}</Notice> : null}
 
-      <BatchActions batch={batch} approvable={approvable.length} act={act} open={open} />
+      <BatchActions batch={batch} approvable={approvable.length} act={act} open={open} onGenerate={() => setGenerating(true)} />
 
       {flash ? <Notice tone="ok">{flash}</Notice> : null}
       <ErrorBanner message={actionError} />
@@ -153,6 +154,18 @@ export function BatchPage() {
       )}
 
       {can.record_payments ? <BankResponseUpload batch={batch} onApplied={reload} /> : null}
+
+      {generating ? (
+        <GenerateFileDialog
+          batch={batch}
+          onDone={(message) => {
+            setFlash(message)
+            setActionError('')
+            reload()
+          }}
+          onClose={() => setGenerating(false)}
+        />
+      ) : null}
 
       {dialog ? (
         <FormDialog
@@ -176,14 +189,15 @@ function BatchActions({
   approvable,
   act,
   open,
+  onGenerate,
 }: {
   batch: BatchDetail
   approvable: number
   act: (fn: () => Promise<unknown>) => Promise<void>
   open: (spec: DialogSpec) => void
+  onGenerate: () => void
 }) {
   const can = batch.can
-  const formats = Object.entries(batch.bank_file_formats).map(([value, f]) => ({ value, label: f.label }))
   const regenerate = batch.status === 'file_generated'
   const buttons = []
 
@@ -252,26 +266,8 @@ function BatchActions({
         key="file"
         className="button"
         disabled={!batch.debit_account_configured}
-        title={batch.debit_account_configured ? undefined : 'Set the debit account in Settings first'}
-        onClick={() =>
-          open({
-            title: regenerate ? 'Regenerate bank file' : 'Generate bank file',
-            description: regenerate ? (
-              <Notice tone="warn">
-                The current file will be marked superseded. Upload only the new file — uploading both pays twice.
-              </Notice>
-            ) : (
-              <p>Creates the bulk-upload CSV for the approved items. Download it and upload it to your bank's portal.</p>
-            ),
-            fields: [
-              { name: 'format', label: 'Format', type: 'select', options: formats },
-              { name: 'value_date', label: 'Value date', type: 'date', initial: todayIst(), required: true },
-              ...(regenerate ? [reasonField('Why regenerate?')] : []),
-            ],
-            submitLabel: regenerate ? 'Regenerate' : 'Generate',
-            run: (v) => payoutsApi.generateFile(batch.id, { format: v.format, value_date: v.value_date, reason: v.reason }),
-          })
-        }
+        title={batch.debit_account_configured ? undefined : 'Add the company bank account in Settings → Bank accounts first'}
+        onClick={onGenerate}
       >
         {regenerate ? 'Regenerate bank file' : 'Generate bank file'}
       </button>,
@@ -302,7 +298,10 @@ function BatchActions({
     <div className="action-bar">
       {buttons}
       {can.generate_file && !batch.debit_account_configured ? (
-        <span className="muted small">Set the debit account number in Settings to generate the bank file.</span>
+        <span className="muted small">
+          Add the company bank account in <Link to="/settings#bank-accounts">Settings → Bank accounts</Link> to generate the bank
+          file.
+        </span>
       ) : null}
     </div>
   )
@@ -532,6 +531,118 @@ function ItemsTable({ batch, open }: { batch: BatchDetail; open: (spec: DialogSp
   )
 }
 
+/** Generate / regenerate the bank file: which company account it debits (default preselected), format, value date. */
+function GenerateFileDialog({ batch, onDone, onClose }: { batch: BatchDetail; onDone: (message: string) => void; onClose: () => void }) {
+  const regenerate = batch.status === 'file_generated'
+  const accounts = batch.bank_accounts
+  const initial = accounts.find((a) => a.is_default) ?? accounts[0]
+  const formatFor = (id: number | undefined) => accounts.find((a) => a.id === id)?.bank_file_format ?? batch.default_bank_file_format
+  const [accountId, setAccountId] = useState<number | undefined>(initial?.id)
+  const [format, setFormat] = useState(() => formatFor(initial?.id))
+  const [valueDate, setValueDate] = useState(todayIst())
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const account = accounts.find((a) => a.id === accountId)
+  const chosenFormat = batch.bank_file_formats[format]
+
+  function pickAccount(id: number) {
+    setAccountId(id)
+    setFormat(formatFor(id)) // the account's own layout, else the Settings default
+  }
+
+  async function submit(e: FormEvent) {
+    e.preventDefault()
+    if (!account) {
+      setError('Pick the account to debit.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    try {
+      const r = await payoutsApi.generateFile(batch.id, { bank_account_id: account.id, format, value_date: valueDate, reason: regenerate ? reason : undefined })
+      onDone(r.message || 'Bank file generated.')
+      onClose()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="dialog-backdrop" role="presentation" onClick={onClose}>
+      <form
+        className="dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={regenerate ? 'Regenerate bank file' : 'Generate bank file'}
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={submit}
+      >
+        <h2>{regenerate ? 'Regenerate bank file' : 'Generate bank file'}</h2>
+        <div className="dialog-description">
+          {regenerate ? (
+            <Notice tone="warn">The current file will be marked superseded. Upload only the new file — uploading both pays twice.</Notice>
+          ) : (
+            <p>Creates the bulk-upload CSV for the approved items. Download it and upload it to your bank's portal.</p>
+          )}
+        </div>
+        <label className="field">
+          <span className="field-label">Debit account *</span>
+          <select value={accountId ?? ''} onChange={(e) => pickAccount(Number(e.target.value))} required>
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.label} · {a.account_number_masked}
+                {a.is_default ? ' (default)' : ''}
+              </option>
+            ))}
+          </select>
+          {account ? (
+            <span className="field-help">
+              {[account.bank_name, account.branch, account.ifsc, account.account_type_label].filter(Boolean).join(' · ')}
+              {account.incomplete ? ' — details incomplete in Settings → Bank accounts' : ''}
+            </span>
+          ) : null}
+        </label>
+        <label className="field">
+          <span className="field-label">Format</span>
+          <select value={format} onChange={(e) => setFormat(e.target.value)}>
+            {Object.entries(batch.bank_file_formats).map(([value, f]) => (
+              <option key={value} value={value}>
+                {f.label}
+              </option>
+            ))}
+          </select>
+          <span className="field-help">
+            {account?.bank_file_format ? "Preselected: this account's format." : 'Preselected: the Settings default.'}
+          </span>
+          {chosenFormat?.confirm_format ? <span className="flag">Confirm this format with your bank before uploading.</span> : null}
+        </label>
+        <label className="field">
+          <span className="field-label">Value date *</span>
+          <input type="date" value={valueDate} min={todayIst()} required onChange={(e) => setValueDate(e.target.value)} />
+        </label>
+        {regenerate ? (
+          <label className="field">
+            <span className="field-label">Why regenerate? *</span>
+            <textarea value={reason} required rows={3} onChange={(e) => setReason(e.target.value)} />
+          </label>
+        ) : null}
+        <ErrorBanner message={error} />
+        <div className="dialog-actions">
+          <button type="button" className="button button-outline" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button type="submit" className="button" disabled={busy || !account}>
+            {busy ? 'Working…' : regenerate ? 'Regenerate' : 'Generate'}
+          </button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
 function BankFiles({ batch }: { batch: BatchDetail }) {
   const [error, setError] = useState('')
   return (
@@ -557,6 +668,12 @@ function BankFiles({ batch }: { batch: BatchDetail }) {
                   {f.filename}
                   <div className="muted small">{f.format_label}</div>
                   {f.confirm_format && f.kind === 'payment' ? <div className="flag">Confirm this format with your bank before uploading.</div> : null}
+                  {f.debit_account ? (
+                    <div className="small">
+                      Debits <span className="strong">{f.debit_account.label}</span>{' '}
+                      <span className="mono nowrap">{f.debit_account.account_number_masked}</span>
+                    </div>
+                  ) : null}
                   {f.superseded ? <div className="flag">Superseded — do not upload</div> : null}
                   {f.note ? <div className="muted small">{f.note}</div> : null}
                 </td>

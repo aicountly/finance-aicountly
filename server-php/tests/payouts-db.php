@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 use App\Database\Database;
 use App\Database\Migrator;
+use App\Services\CompanyBankAccountService;
 use App\Services\DataVault;
 use App\Support\FiscalYear;
 
@@ -18,7 +19,7 @@ $dbHost = getenv('FINANCE_TEST_DB_HOST') ?: '127.0.0.1';
 $dbPort = (int) (getenv('FINANCE_TEST_DB_PORT') ?: 5432);
 $dbUser = getenv('FINANCE_TEST_DB_USER') ?: 'postgres';
 $dbPass = getenv('FINANCE_TEST_DB_PASSWORD') !== false ? (string) getenv('FINANCE_TEST_DB_PASSWORD') : 'postgres';
-$dbName = 'finance_test';
+$dbName = preg_replace('/[^a-z0-9_]/', '', strtolower(getenv('FINANCE_TEST_DB_NAME') ?: 'finance_test')) ?: 'finance_test';
 
 try {
     $adminPdo = Database::connect($dbHost, $dbPort, 'postgres', $dbUser, $dbPass);
@@ -51,7 +52,7 @@ const ENGAGE_OUT_KEY = 'finance-to-engage-callback-key-0123456789abcdef';
 
 test('migrations: applied once, re-run is a no-op, an edited migration is refused', function () use ($pdo, $cacheDir): void {
     $m = new Migrator($pdo, __DIR__ . '/../database/migrations');
-    same(['001_payouts'], $m->migrate(), 'first run applies 001');
+    same(['001_payouts', '002_company_bank_accounts'], $m->migrate(), 'first run applies 001 and 002');
     same([], $m->migrate(), 'second run applies nothing');
     same([], $m->pending(), 'nothing pending');
 
@@ -334,19 +335,163 @@ test('four-eyes: the last editor cannot approve; a stale version is refused; som
     same(409, api('POST', 'v1/payout-items/' . itemId('W1-1') . '/adjustments', $T['alice'], ['amount' => '1', 'reason' => 'late'])['status'], 'approved items are frozen');
 });
 
-test('bank file: needs a debit account; checksum; full account numbers only in the file; download audited', function () use (&$ids, $T, $pdo): void {
-    $id = $ids['W1'];
-    $r = api('POST', "v1/payout-batches/{$id}/bank-file", $T['carol'], []);
-    same(422, $r['status'], 'no debit account → 422');
-    same(200, api('PUT', 'v1/settings', $T['dave'], ['debit_account_number' => '123456789012'])['status'], 'admin sets the debit account');
-    same('XXXXXX9012', api('GET', 'v1/settings', $T['viewer'])['json']['data']['values']['debit_account_number'], 'viewer sees it masked');
-    check(!str_contains(json_encode(api('GET', 'v1/audit-log?entity_type=settings', $T['viewer'])['json']), '123456789012'), 'debit account masked in the audit log too');
+$acct = [];
+const ACCT_A = '123456789012';
+const ACCT_B = '000111222333';
+const ACCT_C = '445566778899';
 
+/** A valid new company bank account body. */
+function bankAccount(array $extra = []): array
+{
+    return $extra + [
+        'label' => 'HDFC current', 'bank_name' => 'HDFC Bank', 'account_holder' => 'Aicountly Technologies Pvt Ltd',
+        'account_number' => ACCT_A, 'account_number_confirm' => ACCT_A, 'ifsc' => 'hdfc0000001', 'branch' => 'Fort, Mumbai',
+        'account_type' => 'current',
+    ];
+}
+
+function accountsDump(): string
+{
+    global $pdo;
+    $dump = '';
+    foreach (['company_bank_accounts', 'audit_log', 'settings', 'bank_files'] as $t) {
+        $dump .= json_encode($pdo->query("SELECT * FROM {$t}")->fetchAll());
+    }
+
+    return $dump;
+}
+
+test('bank file refused while no company bank account exists', function () use (&$ids, $T): void {
+    $id = $ids['W1'];
+    $detail = api('GET', "v1/payout-batches/{$id}", $T['carol'])['json']['data'];
+    same([true, false, []], [$detail['can']['generate_file'], $detail['debit_account_configured'], $detail['bank_accounts']], 'UI: may generate, but no account to debit');
+    $r = api('POST', "v1/payout-batches/{$id}/bank-file", $T['carol'], []);
+    same(422, $r['status'], 'no account → 422');
+    check(str_contains((string) $r['json']['message'], 'Settings → Bank accounts'), 'message says where to add it: ' . $r['json']['message']);
+    same(422, api('PUT', 'v1/settings', $T['dave'], ['debit_account_number' => ACCT_A])['status'], 'the old single setting can no longer be written');
+    same('approved', batchRow($id)['status'], 'still approved');
+});
+
+test('company bank accounts: gates, validation, default rules, deactivate / activate, masked everywhere', function () use (&$ids, $T, $pdo, $vault, &$acct): void {
+    $l = api('GET', 'v1/bank-accounts', $T['viewer']);
+    same(200, $l['status'], 'viewer lists');
+    same([[], false], [$l['json']['data']['accounts'], $l['json']['data']['can_edit']], 'none yet; viewer cannot edit');
+    check(isset($l['json']['data']['options']['account_type']['od'], $l['json']['data']['options']['bank_file_format']['generic_neft_csv']), 'options');
+    foreach (['viewer', 'alice', 'carol'] as $who) {
+        same(403, api('POST', 'v1/bank-accounts', $T[$who], bankAccount())['status'], "{$who} cannot add");
+    }
+
+    $bad = api('POST', 'v1/bank-accounts', $T['dave'], bankAccount(['ifsc' => 'HDFC1000001', 'account_number' => '12345', 'account_number_confirm' => '12345', 'bank_name' => '']));
+    same(422, $bad['status'], 'invalid → 422');
+    same(['bank_name', 'ifsc', 'account_number'], array_keys($bad['json']['errors']), 'errors per field');
+    $mismatch = api('POST', 'v1/bank-accounts', $T['dave'], bankAccount(['account_number_confirm' => '123456789013']));
+    same(['account_number_confirm'], array_keys($mismatch['json']['errors'] ?? []), 'confirmation must match');
+    same(0, (int) $pdo->query('SELECT count(*) AS n FROM company_bank_accounts')->fetch()['n'], 'nothing stored');
+
+    $a = api('POST', 'v1/bank-accounts', $T['dave'], bankAccount());
+    same(201, $a['status'], 'admin adds the first account');
+    $A = $a['json']['data'];
+    same([true, true, 'XXXXXX9012', '9012', 'HDFC0000001', false], [$A['is_default'], $A['active'], $A['account_number_masked'], $A['account_number_last4'], $A['ifsc'], $A['incomplete']], 'first account is the default; masked; IFSC normalised');
+    same(409, api('POST', 'v1/bank-accounts', $T['dave'], bankAccount(['label' => 'Again']))['status'], 'same number twice → 409');
+
+    $b = api('POST', 'v1/bank-accounts', $T['dave'], bankAccount(['label' => 'ICICI OD', 'bank_name' => 'ICICI Bank', 'account_number' => ACCT_B,
+        'account_number_confirm' => ACCT_B, 'ifsc' => 'ICIC0000104', 'branch' => null, 'account_type' => 'od', 'bank_file_format' => 'icici_hdfc_style_csv']));
+    same(201, $b['status'], 'second account');
+    $B = $b['json']['data'];
+    same([false, 'icici_hdfc_style_csv', 'Overdraft (OD)'], [$B['is_default'], $B['bank_file_format'], $B['account_type_label']], 'not the default; own file format');
+    $row = $pdo->query("SELECT * FROM company_bank_accounts WHERE id = {$B['id']}")->fetch();
+    check(str_starts_with($row['account_number_enc'], 'v1:'), 'number encrypted at rest');
+    same(ACCT_B, $vault->decrypt($row['account_number_enc']), 'decrypts with FINANCE_DATA_KEY');
+
+    // Edit.
+    same(403, api('PUT', "v1/bank-accounts/{$B['id']}", $T['carol'], ['label' => 'x'])['status'], 'approver cannot edit');
+    same(422, api('PUT', "v1/bank-accounts/{$B['id']}", $T['dave'], ['account_number' => ACCT_C])['status'], 'new number without confirmation → 422');
+    same(409, api('PUT', "v1/bank-accounts/{$B['id']}", $T['dave'], ['account_number' => ACCT_A, 'account_number_confirm' => ACCT_A])['status'], 'another account\'s number → 409');
+    $e = api('PUT', "v1/bank-accounts/{$B['id']}", $T['dave'], ['label' => 'ICICI overdraft', 'branch' => 'BKC']);
+    same([200, 'ICICI overdraft', 'BKC', 'XXXXXX2333', false], [$e['status'], $e['json']['data']['label'], $e['json']['data']['branch'], $e['json']['data']['account_number_masked'], $e['json']['data']['is_default']], 'edited; number and default kept');
+    same(404, api('PUT', 'v1/bank-accounts/99999', $T['dave'], ['label' => 'x'])['status'], 'unknown → 404');
+
+    // Default: exactly one, moved explicitly.
+    same(403, api('POST', "v1/bank-accounts/{$B['id']}/default", $T['carol'], [])['status'], 'approver cannot change the default');
+    same(200, api('POST', "v1/bank-accounts/{$B['id']}/default", $T['dave'], [])['status'], 'B becomes the default');
+    same([$B['id']], array_map('intval', array_column($pdo->query('SELECT id FROM company_bank_accounts WHERE is_default')->fetchAll(), 'id')), 'only B is the default');
+    same(200, api('POST', "v1/bank-accounts/{$A['id']}/default", $T['dave'], [])['status'], 'and back to A');
+    $refused = '';
+    try {
+        $pdo->exec('UPDATE company_bank_accounts SET is_default = true');
+    } catch (\PDOException $ex) {
+        $refused = $ex->getMessage();
+    }
+    check(str_contains($refused, 'company_bank_accounts_one_default'), 'database refuses two defaults: ' . $refused);
+    $refused = '';
+    try {
+        $pdo->exec('UPDATE company_bank_accounts SET is_default = false');
+    } catch (\PDOException $ex) {
+        $refused = $ex->getMessage();
+    }
+    check(str_contains($refused, 'exactly one active account must be the default'), 'database refuses no default among active accounts: ' . $refused);
+    same(1, (int) $pdo->query('SELECT count(*) AS n FROM company_bank_accounts WHERE is_default')->fetch()['n'], 'still one default');
+
+    // Deactivate / activate.
+    same(403, api('POST', "v1/bank-accounts/{$A['id']}/deactivate", $T['carol'], [])['status'], 'approver cannot deactivate');
+    $d = api('POST', "v1/bank-accounts/{$A['id']}/deactivate", $T['dave'], []);
+    same(422, $d['status'], 'the default cannot be deactivated while another is active without choosing a new default');
+    check(isset($d['json']['errors']['new_default_id']), 'asks for new_default_id');
+    same(422, api('POST', "v1/bank-accounts/{$A['id']}/deactivate", $T['dave'], ['new_default_id' => $A['id']])['status'], 'not itself');
+    $d = api('POST', "v1/bank-accounts/{$A['id']}/deactivate", $T['dave'], ['new_default_id' => $B['id']]);
+    same([200, false, false], [$d['status'], $d['json']['data']['active'], $d['json']['data']['is_default']], 'A deactivated');
+    same(true, (bool) $pdo->query("SELECT is_default FROM company_bank_accounts WHERE id = {$B['id']}")->fetch()['is_default'], 'B is the default now');
+    same(409, api('POST', "v1/bank-accounts/{$A['id']}/default", $T['dave'], [])['status'], 'an inactive account cannot be the default');
+    $detail = api('GET', "v1/payout-batches/{$ids['W1']}", $T['carol'])['json']['data'];
+    same([$B['id']], array_column($detail['bank_accounts'], 'id'), 'picker offers active accounts only');
+    same(422, api('POST', "v1/payout-batches/{$ids['W1']}/bank-file", $T['carol'], ['bank_account_id' => $A['id']])['status'], 'an inactive account cannot be debited');
+
+    $d = api('POST', "v1/bank-accounts/{$B['id']}/deactivate", $T['dave'], []);
+    same(200, $d['status'], 'the only active account may be deactivated');
+    same(0, (int) $pdo->query('SELECT count(*) AS n FROM company_bank_accounts WHERE active')->fetch()['n'], 'none active');
+    $r = api('POST', "v1/payout-batches/{$ids['W1']}/bank-file", $T['carol'], []);
+    same(422, $r['status'], 'no active account → bank file refused');
+    check(str_contains((string) $r['json']['message'], 'No active company bank account'), 'says so');
+    same('', api('GET', 'v1/settings', $T['viewer'])['json']['data']['values']['debit_account_number'], 'no default → legacy key empty');
+
+    $act = api('POST', "v1/bank-accounts/{$A['id']}/activate", $T['dave'], []);
+    same([200, true, true], [$act['status'], $act['json']['data']['active'], $act['json']['data']['is_default']], 'A re-activated becomes the default (none was)');
+    $act = api('POST', "v1/bank-accounts/{$B['id']}/activate", $T['dave'], []);
+    same([200, true, false], [$act['status'], $act['json']['data']['active'], $act['json']['data']['is_default']], 'B re-activated, not the default');
+    same(409, api('POST', "v1/bank-accounts/{$B['id']}/activate", $T['dave'], [])['status'], 'already active → 409');
+
+    // Masking: no full number in any answer, audit row or plaintext column — for finance_admin too.
+    $answers = json_encode([
+        api('GET', 'v1/bank-accounts', $T['dave'])['json'],
+        api('GET', 'v1/bank-accounts', $T['viewer'])['json'],
+        api('GET', 'v1/settings', $T['dave'])['json'],
+        api('GET', "v1/payout-batches/{$ids['W1']}", $T['dave'])['json'],
+        api('GET', 'v1/audit-log?entity_type=company_bank_account', $T['dave'])['json'],
+        $a['json'], $b['json'], $e['json'], $d['json'], $act['json'],
+    ]);
+    foreach ([ACCT_A, ACCT_B] as $n) {
+        check(!str_contains($answers, $n), "API never shows {$n}");
+        check(!str_contains(accountsDump(), $n), "{$n} nowhere in clear in the database");
+    }
+    same('XXXXXX9012', api('GET', 'v1/settings', $T['dave'])['json']['data']['values']['debit_account_number'], 'legacy key: default account, masked even for finance_admin');
+    $actions = array_column($pdo->query("SELECT DISTINCT action FROM audit_log WHERE entity_type = 'company_bank_account'")->fetchAll(), 'action');
+    foreach (['bank_account.created', 'bank_account.updated', 'bank_account.default_changed', 'bank_account.deactivated', 'bank_account.activated'] as $x) {
+        check(in_array($x, $actions, true), "audited: {$x}");
+    }
+    $upd = $pdo->query("SELECT before, after, actor FROM audit_log WHERE action = 'bank_account.updated' ORDER BY id DESC LIMIT 1")->fetch();
+    same(['dave@aicountly.com', 'ICICI overdraft'], [$upd['actor'], json_decode($upd['after'], true)['label']], 'who and what changed');
+    $acct = ['A' => $A['id'], 'B' => $B['id']];
+});
+
+test('bank file: default debit account; checksum; full account numbers only in the file; download audited', function () use (&$ids, $T, $pdo, &$acct): void {
+    $id = $ids['W1'];
     $g = api('POST', "v1/payout-batches/{$id}/bank-file", $T['carol'], ['format' => 'generic_neft_csv']);
     same(201, $g['status'], 'generated');
     same(2, $g['json']['data']['item_count'], 'held item excluded');
     same('41700.00', $g['json']['data']['total_amount'], '17700 + 24000');
+    same(['id' => $acct['A'], 'label' => 'HDFC current', 'account_number_masked' => 'XXXXXX9012'], $g['json']['data']['debit_account'], 'debits the default account');
     same('file_generated', batchRow($id)['status'], 'batch file_generated');
+    same($acct['A'], (int) $pdo->query("SELECT bank_account_id FROM bank_files WHERE id = {$g['json']['data']['id']}")->fetch()['bank_account_id'], 'bank_account_id stored');
 
     $fileId = $g['json']['data']['id'];
     same(403, api('GET', "v1/payout-batches/{$id}/bank-files/{$fileId}", $T['alice'])['status'], 'accountant cannot download');
@@ -354,6 +499,7 @@ test('bank file: needs a debit account; checksum; full account numbers only in t
     same(200, $d['status'], 'approver downloads');
     check(str_contains($d['headers'], 'text/csv'), 'csv');
     check(str_contains($d['body'], '001234567890') && str_contains($d['body'], '998877665544'), 'full account numbers in the file');
+    check(str_contains($d['body'], ',' . ACCT_A . ','), 'the default account is the debit account in the file');
     check(!str_contains($d['body'], '556677889900'), 'held payee not in the file');
     check(str_contains($d['body'], 'W1-1') && str_contains($d['body'], '24000.00'), 'reference and net amount');
     preg_match('/X-Content-SHA256:\s*([0-9a-f]{64})/i', $d['headers'], $m);
@@ -368,6 +514,33 @@ test('bank file: needs a debit account; checksum; full account numbers only in t
     same(201, $re['status'], 'regenerated with a reason');
     same(true, $re['json']['data']['confirm_format'], 'bank-style flagged: confirm format with your bank');
     same(1, (int) $pdo->query('SELECT count(*) AS n FROM bank_files WHERE superseded')->fetch()['n'], 'previous file superseded');
+});
+
+test('bank file: chosen debit account and its format override; batch view shows label + last four', function () use (&$ids, $T, $pdo, &$acct): void {
+    $id = $ids['W1'];
+    $r = api('POST', "v1/payout-batches/{$id}/bank-file", $T['carol'], ['reason' => 'Pay from the OD account', 'bank_account_id' => $acct['B']]);
+    same(201, $r['status'], 'regenerated from the chosen account');
+    same(['icici_hdfc_style_csv', $acct['B'], 'XXXXXX2333'], [$r['json']['data']['format'], $r['json']['data']['debit_account']['id'], $r['json']['data']['debit_account']['account_number_masked']],
+        'no format given → the account\'s own format');
+    $row = $pdo->query("SELECT bank_account_id, debit_account_label, debit_account_last4 FROM bank_files WHERE id = {$r['json']['data']['id']}")->fetch();
+    same([$acct['B'], 'ICICI overdraft', '2333'], [(int) $row['bank_account_id'], $row['debit_account_label'], $row['debit_account_last4']], 'stored on bank_files');
+    $body = api('GET', "v1/payout-batches/{$id}/bank-files/{$r['json']['data']['id']}", $T['carol'])['body'];
+    check(str_starts_with($body, 'PYMT_PROD_TYPE_CODE') && str_contains($body, 'PAB_VENDOR,NEFT,' . ACCT_B . ','), 'file debits the chosen account in its format');
+    check(!str_contains($body, ACCT_A), 'not the default account');
+
+    $explicit = api('POST', "v1/payout-batches/{$id}/bank-file", $T['carol'], ['reason' => 'Generic layout after all', 'bank_account_id' => $acct['B'], 'format' => 'generic_neft_csv']);
+    same('generic_neft_csv', $explicit['json']['data']['format'], 'an explicit format still wins');
+    same(422, api('POST', "v1/payout-batches/{$id}/bank-file", $T['carol'], ['reason' => 'x', 'bank_account_id' => 99999])['status'], 'unknown account → 422');
+
+    $detail = api('GET', "v1/payout-batches/{$id}", $T['viewer'])['json']['data'];
+    $active = array_values(array_filter($detail['bank_files'], static fn ($f) => $f['kind'] === 'payment' && !$f['superseded']));
+    same(1, count($active), 'one current file');
+    same(['id' => $acct['B'], 'label' => 'ICICI overdraft', 'account_number_masked' => 'XXXXXX2333'], $active[0]['debit_account'], 'batch view: which account the file debits');
+    same($acct['A'], $detail['bank_accounts'][0]['id'], 'picker lists the default first');
+    same('generic_neft_csv', $detail['default_bank_file_format'], 'settings default format shown for accounts without their own');
+    check(!str_contains(json_encode($detail), ACCT_B), 'masked in the batch view');
+    $audit = $pdo->query("SELECT after FROM audit_log WHERE action = 'bank_file.regenerated' ORDER BY id DESC LIMIT 1")->fetch()['after'];
+    check(str_contains($audit, 'XXXXXX2333') && !str_contains($audit, ACCT_B), 'bank file audit names the debit account, masked');
 });
 
 test('nothing is marked paid without a recorded UTR (API and database)', function () use ($T, $pdo): void {
@@ -662,4 +835,80 @@ test('payee sync: changed bank details flag the item for the reviewer and are au
     check(!str_contains($audit['after'], '111122223333'), 'no full account in the audit log');
     same(false, (bool) itemRow('W1-2')['bank_changed'], 'earlier item unchanged');
     same('27XXXXXXXXXX1Z5', api('GET', 'v1/payees', $T['viewer'])['json']['data'][0]['gstin'], 'GSTIN masked (it embeds the PAN)');
+});
+
+/** Run bin/migrate.php with the given environment; stdout + stderr. */
+function runMigrate(array $env): string
+{
+    $proc = proc_open([PHP_BINARY, __DIR__ . '/../bin/migrate.php'], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, $env + ['PATH' => (string) getenv('PATH')]);
+    $out = stream_get_contents($pipes[1]) . stream_get_contents($pipes[2]);
+    proc_close($proc);
+
+    return $out;
+}
+
+test('migration 002 moves the old debit_account_number setting into a default "Primary account" (encrypted, audited, once)', function () use ($adminPdo, $dbHost, $dbPort, $dbUser, $dbPass, $dbName, $cacheDir, $vault): void {
+    $legacyDb = $dbName . '_legacy';
+    $adminPdo->exec("DROP DATABASE IF EXISTS {$legacyDb} WITH (FORCE)");
+    $adminPdo->exec("CREATE DATABASE {$legacyDb}");
+    $lp = null;
+    try {
+        $lp  = Database::connect($dbHost, $dbPort, $legacyDb, $dbUser, $dbPass);
+        $dir = $cacheDir . '/migrations-001-only';
+        @mkdir($dir, 0700, true);
+        copy(__DIR__ . '/../database/migrations/001_payouts.sql', $dir . '/001_payouts.sql');
+        same(['001_payouts'], (new Migrator($lp, $dir))->migrate(), 'a database deployed before 002');
+        $lp->exec("UPDATE settings SET value = '50100012345678' WHERE key = 'debit_account_number'");
+        $env = ['FINANCE_DB_HOST' => $dbHost, 'FINANCE_DB_PORT' => (string) $dbPort, 'FINANCE_DB_NAME' => $legacyDb,
+            'FINANCE_DB_USER' => $dbUser, 'FINANCE_DB_PASSWORD' => $dbPass];
+        $count = static fn (): int => (int) $lp->query('SELECT count(*) AS n FROM company_bank_accounts')->fetch()['n'];
+        $setting = static fn (): string => (string) $lp->query("SELECT value FROM settings WHERE key = 'debit_account_number'")->fetch()['value'];
+
+        $out = runMigrate($env);
+        check(str_contains($out, 'applied 002_company_bank_accounts'), 'deploy applies 002: ' . $out);
+        check(str_contains($out, 'once FINANCE_DATA_KEY is set'), 'without the data key the number waits: ' . $out);
+        same([0, '50100012345678'], [$count(), $setting()], 'nothing moved without the key');
+
+        $out = runMigrate($env + ['FINANCE_DATA_KEY' => DATA_KEY_HEX]);
+        check(str_contains($out, 'Moved the debit account from Settings into Bank accounts as "Primary account" (XXXXXX5678, default)'), 'moved: ' . $out);
+        check(!str_contains($out, '50100012345678'), 'the number is not printed');
+        $row = $lp->query('SELECT * FROM company_bank_accounts')->fetch();
+        same(['Primary account', true, true, null, null, '', '5678', 'legacy_setting', 'current', null],
+            [$row['label'], $row['is_default'], $row['active'], $row['bank_name'], $row['ifsc'], $row['account_holder'], $row['account_number_last4'], $row['source'], $row['account_type'], $row['bank_file_format']],
+            'first account, the default; unknown fields left blank');
+        same('50100012345678', $vault->decrypt($row['account_number_enc']), 'encrypted with FINANCE_DATA_KEY');
+        same('', $setting(), 'the setting no longer holds the number in clear (key kept)');
+        $audit = $lp->query("SELECT actor, before, after FROM audit_log WHERE action = 'bank_account.migrated_from_setting'")->fetchAll();
+        same(1, count($audit), 'move audited');
+        check(str_contains($audit[0]['before'] . $audit[0]['after'], 'XXXXXX5678'), 'audit masked');
+        $dump = '';
+        foreach (['settings', 'company_bank_accounts', 'audit_log', 'schema_migrations'] as $t) {
+            $dump .= json_encode($lp->query("SELECT * FROM {$t}")->fetchAll());
+        }
+        check(!str_contains($dump, '50100012345678'), 'no plaintext number left in the database');
+
+        runMigrate($env + ['FINANCE_DATA_KEY' => DATA_KEY_HEX]);
+        same(1, $count(), 're-running migrate moves nothing twice');
+
+        $svc   = new CompanyBankAccountService($lp, $vault);
+        $actor = ['actor' => 'dave@aicountly.com', 'name' => 'Dave', 'ip' => null];
+        same(true, $svc->list()[0]['incomplete'], 'flagged incomplete for the admin');
+        $e = throwsApi(422, static fn () => $svc->update((int) $row['id'], ['label' => 'Main account'], $actor), 'editing the moved account asks for the missing details');
+        same(['bank_name', 'account_holder', 'ifsc'], array_keys($e->errors()), 'bank name, holder and IFSC');
+        $u = $svc->update((int) $row['id'], ['bank_name' => 'HDFC Bank', 'account_holder' => 'Aicountly Technologies Pvt Ltd', 'ifsc' => 'HDFC0000001'], $actor);
+        same([false, 'XXXXXX5678', true], [$u['incomplete'], $u['account_number_masked'], $u['is_default']], 'completed; number and default kept');
+
+        // A value left in the setting while accounts already exist (e.g. written while the key was missing): adopted on
+        // first use, not as the default; the same number again is only cleared.
+        $lp->exec("UPDATE settings SET value = '60200011112222' WHERE key = 'debit_account_number'");
+        $list = $svc->list();
+        same([2, 'Primary account', false, '2222'], [count($list), $list[1]['label'], $list[1]['is_default'], $list[1]['account_number_last4']], 'adopted lazily, not the default');
+        same('', $setting(), 'cleared');
+        $lp->exec("UPDATE settings SET value = '60200011112222' WHERE key = 'debit_account_number'");
+        same(['XXXXXX5678', 2, ''], [$svc->defaultMasked(), count($svc->list()), $setting()], 'known number: just cleared');
+    } finally {
+        $lp = null;
+        usleep(100_000);
+        $adminPdo->exec("DROP DATABASE IF EXISTS {$legacyDb} WITH (FORCE)");
+    }
 });

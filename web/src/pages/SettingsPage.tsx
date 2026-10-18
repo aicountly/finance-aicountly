@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
+import { BankAccountsSection } from '../components/BankAccounts'
 import { ErrorBanner, Notice, PageHeader, StatusBadge } from '../components/ui'
 import { useApiData } from '../hooks/useApiData'
 import { dateTime } from '../lib/format'
@@ -28,8 +29,9 @@ export function SettingsPage() {
     setBusy(true)
     setSaveError('')
     setSaved('')
+    // debit_account_number is read-only now (Bank accounts below): never sent back.
     const changed = Object.fromEntries(
-      Object.entries(values).filter(([k, v]) => data.values[k as keyof SettingsValues] !== v),
+      Object.entries(values).filter(([k, v]) => k !== 'debit_account_number' && data.values[k as keyof SettingsValues] !== v),
     ) as Partial<SettingsValues>
     try {
       if (Object.keys(changed).length === 0) {
@@ -100,6 +102,9 @@ export function SettingsPage() {
           </label>
 
           <h2 className="section-title section-title-tight">Bank file</h2>
+          <p className="muted small">
+            The company account the bank debits is chosen from <a href="#bank-accounts">Bank accounts</a> below.
+          </p>
           <label className="field">
             <span className="field-label">Default format</span>
             <select value={values.bank_file_format} onChange={set('bank_file_format')} disabled={!editable}>
@@ -109,6 +114,7 @@ export function SettingsPage() {
                 </option>
               ))}
             </select>
+            <span className="field-help">Used for bank accounts that do not set their own format.</span>
           </label>
           <label className="field">
             <span className="field-label">Payment mode</span>
@@ -117,11 +123,6 @@ export function SettingsPage() {
                 <option key={m}>{m}</option>
               ))}
             </select>
-          </label>
-          <label className="field">
-            <span className="field-label">Debit account number</span>
-            <input value={values.debit_account_number} onChange={set('debit_account_number')} disabled={!editable} />
-            <span className="field-help">The company account the bank debits. Required before a bank file can be generated.</span>
           </label>
           <label className="field">
             <span className="field-label">Narration prefix</span>
@@ -138,6 +139,7 @@ export function SettingsPage() {
           ) : null}
         </form>
       ) : null}
+      <BankAccountsSection />
       <EngageCallbacks />
     </>
   )

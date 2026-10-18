@@ -12,7 +12,7 @@ declare(strict_types=1);
  *    talking to a stub Console (tests/fake-console.php) also under `php -S`.
  *    One API instance has CONSOLE_API_TOKEN set (roles re-validated per
  *    request), one does not (warn + trust the token).
- * 3. Payouts against PostgreSQL (payouts-db.php): its own database `finance_test`
+ * 3. Payouts against PostgreSQL (payouts-db.php): its own database `finance_test` (FINANCE_TEST_DB_NAME overrides)
  *    (dropped afterwards), the API under `php -S`, and a stub Engage
  *    (tests/fake-engage.php) for the status outbox. Connection: FINANCE_TEST_DB_HOST
  *    / _PORT / _USER / _PASSWORD (default 127.0.0.1:5432 postgres/postgres). If

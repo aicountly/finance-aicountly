@@ -79,6 +79,62 @@ export interface BankFileFormat {
   confirm_format: boolean
 }
 
+/** The company account a generated payment file debits (snapshot at generation; masked). */
+export interface DebitAccountRef {
+  id: number
+  label: string
+  account_number_masked: string
+}
+
+export type CompanyAccountType = 'current' | 'savings' | 'od' | 'cc'
+
+/** A company (debit) bank account — v1/bank-accounts. The full number is never sent to the browser. */
+export interface CompanyBankAccount {
+  id: number
+  label: string
+  bank_name: string | null
+  account_holder: string
+  account_number_masked: string
+  account_number_last4: string
+  ifsc: string | null
+  branch: string | null
+  account_type: CompanyAccountType
+  account_type_label: string
+  bank_file_format: string | null
+  bank_file_format_label: string | null
+  is_default: boolean
+  active: boolean
+  /** Moved from the old single setting and still missing bank name / IFSC / holder. */
+  incomplete: boolean
+  source: 'manual' | 'legacy_setting'
+  created_by: string
+  created_at: string
+  updated_by: string | null
+  updated_at: string
+}
+
+export interface BankAccountsPayload {
+  accounts: CompanyBankAccount[]
+  can_edit: boolean
+  options: { account_type: Record<CompanyAccountType, string>; bank_file_format: Record<string, BankFileFormat> }
+  default_bank_file_format: string
+}
+
+export interface BankAccountInput {
+  label: string
+  bank_name: string
+  account_holder: string
+  /** Required when adding; leave out when editing to keep the current number. */
+  account_number?: string
+  account_number_confirm?: string
+  ifsc: string
+  branch: string
+  account_type: CompanyAccountType
+  /** '' = use the Settings default format. */
+  bank_file_format: string
+  is_default?: boolean
+}
+
 export interface BankFile {
   id: number
   kind: 'payment' | 'response'
@@ -93,6 +149,8 @@ export interface BankFile {
   note: string | null
   created_by: string
   created_at: string
+  /** null for response files and for files generated before company bank accounts existed. */
+  debit_account: DebitAccountRef | null
 }
 
 export interface BatchDetail extends BatchSummary {
@@ -118,6 +176,9 @@ export interface BatchDetail extends BatchSummary {
   items: PayoutItem[]
   bank_files: BankFile[]
   bank_file_formats: Record<string, BankFileFormat>
+  default_bank_file_format: string
+  /** Active company bank accounts, default first — the generate-file picker. */
+  bank_accounts: CompanyBankAccount[]
   debit_account_configured: boolean
 }
 
@@ -233,7 +294,8 @@ export interface SettingsValues {
   minimum_payout: string
   bank_file_format: string
   payment_mode: 'NEFT' | 'IMPS' | 'RTGS'
-  debit_account_number: string
+  /** @deprecated read-only, masked: the default company bank account. Managed in Settings → Bank accounts. */
+  debit_account_number?: string
   narration_prefix: string
   four_eyes_enabled: 'true' | 'false'
 }
@@ -301,7 +363,7 @@ export const payoutsApi = {
   recalculate: (id: number) => apiCall<BatchDetail>('POST', `/v1/payout-batches/${id}/recalculate`, {}),
   approve: (id: number, version: number) => apiCall<BatchDetail>('POST', `/v1/payout-batches/${id}/approve`, { version }),
   cancel: (id: number, reason: string) => apiCall<BatchDetail>('POST', `/v1/payout-batches/${id}/cancel`, { reason }),
-  generateFile: (id: number, body: { format?: string; value_date?: string; reason?: string }) =>
+  generateFile: (id: number, body: { bank_account_id?: number; format?: string; value_date?: string; reason?: string }) =>
     apiCall<BankFile>('POST', `/v1/payout-batches/${id}/bank-file`, body),
   downloadFile: (id: number, file: BankFile) => apiDownload(`/v1/payout-batches/${id}/bank-files/${file.id}`, file.filename),
   bankResponse: (id: number, csv: string, dryRun: boolean) =>
@@ -323,5 +385,13 @@ export const payoutsApi = {
   auditLog: (filters: { entity_type?: string; entity_id?: string; actor?: string; action?: string; page?: number }) =>
     apiGet<AuditPage>(`/v1/audit-log${q(filters)}`),
   outbox: () => apiGet<OutboxOverview>('/v1/outbox'),
+
+  bankAccounts: () => apiGet<BankAccountsPayload>('/v1/bank-accounts'),
+  createBankAccount: (body: BankAccountInput) => apiCall<CompanyBankAccount>('POST', '/v1/bank-accounts', body),
+  updateBankAccount: (id: number, body: BankAccountInput) => apiCall<CompanyBankAccount>('PUT', `/v1/bank-accounts/${id}`, body),
+  setDefaultBankAccount: (id: number) => apiCall<CompanyBankAccount>('POST', `/v1/bank-accounts/${id}/default`, {}),
+  deactivateBankAccount: (id: number, newDefaultId?: number) =>
+    apiCall<CompanyBankAccount>('POST', `/v1/bank-accounts/${id}/deactivate`, newDefaultId ? { new_default_id: newDefaultId } : {}),
+  activateBankAccount: (id: number) => apiCall<CompanyBankAccount>('POST', `/v1/bank-accounts/${id}/activate`, {}),
   requeue: (id: number) => apiCall('POST', `/v1/outbox/${id}/requeue`, {}),
 }

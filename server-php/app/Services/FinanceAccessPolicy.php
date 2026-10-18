@@ -22,7 +22,8 @@ namespace App\Services;
  *             adjust, recalculate; export the TDS register (full PAN)
  *   approve   payout_approver, finance_admin — approve / cancel a batch, generate and download the
  *             bank file, record payment results (UTR, failures, reversals)
- *   settings  finance_admin — payout settings, re-queue dead Engage callbacks
+ *   settings  finance_admin — payout settings, company bank accounts (add / edit / default /
+ *             deactivate; every role lists them masked), re-queue dead Engage callbacks
  */
 final class FinanceAccessPolicy
 {

@@ -99,10 +99,10 @@ authenticated route has none.
 | Screen | What it does |
 | --- | --- |
 | Dashboard | awaiting review / payment, on hold, paid this FY (net, TDS, GST), Engage callback health, open batches |
-| Payouts | batches → items: hold / release with reason, adjust with reason, recalculate, submit, approve, cancel, generate bank file (generic NEFT/IMPS CSV or ICICI/HDFC-style — confirm with your bank), record UTRs one by one or from the bank's response CSV, mark failed / reversed, release held items back to Engage |
+| Payouts | batches → items: hold / release with reason, adjust with reason, recalculate, submit, approve, cancel, generate bank file from a chosen company bank account (default preselected; generic NEFT/IMPS CSV or ICICI/HDFC-style — confirm with your bank), record UTRs one by one or from the bank's response CSV, mark failed / reversed, release held items back to Engage |
 | Payees | synced from Engage batches; PAN, GSTIN, bank account masked; FY totals; payout history; "bank changed" flags |
 | TDS register | section 194H per quarter — deductee PAN, name, code, amount, rate, TDS, date, UTR (Form 26Q data); CSV export with full PAN (audited) |
-| Settings | TDS rate / threshold, GST mode / rate, minimum payout, four-eyes, bank file format, payment mode, debit account; Engage callback outbox |
+| Settings | TDS rate / threshold, GST mode / rate, minimum payout, four-eyes, default bank file format, payment mode; **Bank accounts** — the company accounts payouts are debited from (add / edit / default / deactivate, finance admins; numbers masked for everyone); Engage callback outbox |
 | Audit log | every change: who, what, when, before, after (append-only) |
 
 Contract with Engage (SELLER-CONTRACTS "Weekly payouts"):
@@ -116,7 +116,8 @@ with your CA: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#weekly-seller-payouts).
 Tests: `php server-php/tests/run.php` — policy and payout unit tests (TDS
 threshold, GST modes, state machine, four-eyes, encryption, bank files), the
 real API under `php -S` against a stub Console, and the payout flow end to end
-against PostgreSQL (own database `finance_test`, dropped afterwards; stub Engage
+against PostgreSQL (own database `finance_test` — `FINANCE_TEST_DB_NAME` overrides —
+plus `<name>_legacy` for the migration-002 test, both dropped afterwards; stub Engage
 for the outbox). Defaults to `127.0.0.1:5432` `postgres/postgres`
 (`FINANCE_TEST_DB_*` override); the PostgreSQL part is skipped with a warning
 when it is unreachable unless `FINANCE_TESTS_REQUIRE_DB=1`.
