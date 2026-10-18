@@ -7,7 +7,8 @@ declare(strict_types=1);
  *   php server-php/tests/run.php
  *
  * 1. Unit: FinanceAccessPolicy, AuthzCache and the payout rules (payouts-unit.php:
- *    money, FY, TDS/GST, state machine, four-eyes, encryption, bank files, routes).
+ *    money, FY, TDS/GST, state machine, four-eyes, encryption, bank files, routes)
+ *    and the invoicing rules (invoicing-unit.php).
  * 2. HTTP: the real front controller (public/index.php) under `php -S`,
  *    talking to a stub Console (tests/fake-console.php) also under `php -S`.
  *    One API instance has CONSOLE_API_TOKEN set (roles re-validated per
@@ -18,6 +19,10 @@ declare(strict_types=1);
  *    / _PORT / _USER / _PASSWORD (default 127.0.0.1:5432 postgres/postgres). If
  *    PostgreSQL is unreachable the section is skipped with a warning, unless
  *    FINANCE_TESTS_REQUIRE_DB=1 (then it fails).
+ * 4. Invoicing (invoicing-unit.php without I/O; invoicing-db.php against the same database): GSTIN, tax engine,
+ *    amount in words, AIC-S2S v1, numbering (two worker processes, tests/invoicing-worker.php), offline payments
+ *    and credit notes with four-eyes, immutability triggers, the Manage read API and a stub Gotenberg
+ *    (tests/fake-gotenberg.php).
  *
  * Exits non-zero on the first failing assertion.
  */
@@ -125,6 +130,7 @@ test('user-access revocations', function (): void {
 });
 
 require __DIR__ . '/payouts-unit.php';
+require __DIR__ . '/invoicing-unit.php';
 
 $cacheDir = sys_get_temp_dir() . '/finance-tests-' . bin2hex(random_bytes(4));
 $_ENV['FINANCE_AUTHZ_CACHE_DIR'] = $cacheDir . '/unit';
@@ -469,5 +475,6 @@ test('GET /api/health reports Console role sync (booleans only)', function () us
 });
 
 require __DIR__ . '/payouts-db.php';
+require __DIR__ . '/invoicing-db.php';
 
 echo "\n{$passed} assertions passed.\n";

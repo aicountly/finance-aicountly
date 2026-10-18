@@ -10,10 +10,24 @@ namespace App\Support;
  */
 final class ApiException extends \RuntimeException
 {
-    /** @param array<string,mixed> $errors */
-    public function __construct(string $message, int $status = 422, private array $errors = [])
+    /**
+     * @param array<string,mixed> $errors
+     * @param string|null $errorCode machine-readable code (contract §0.2, e.g. seller_not_configured); optional
+     */
+    public function __construct(string $message, int $status = 422, private array $errors = [], private ?string $errorCode = null)
     {
         parent::__construct($message, $status);
+    }
+
+    /** An error with a machine-readable code (AIC-S2S envelope `error.code`, invoicing states). */
+    public static function coded(int $status, string $code, string $message, array $errors = []): self
+    {
+        return new self($message, $status, $errors, $code);
+    }
+
+    public function errorCode(): ?string
+    {
+        return $this->errorCode;
     }
 
     public function status(): int
