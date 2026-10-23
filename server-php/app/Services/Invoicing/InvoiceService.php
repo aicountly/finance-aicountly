@@ -262,12 +262,13 @@ final class InvoiceService
 
         $ins = $this->pdo->prepare(
             'INSERT INTO fin_invoice_lines (invoice_id, line_no, item_code, item_kind, description, sac, gst_rate, price_basis, period_start, period_end, quantity,
-                 amount_paise, taxable_paise, cgst_paise, sgst_paise, igst_paise, total_paise)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                 amount_paise, taxable_paise, cgst_paise, sgst_paise, igst_paise, total_paise, list_amount_paise, discount_paise, discount_ref)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         );
         foreach ($calc['lines'] as $i => $l) {
             $ins->execute([$id, $i + 1, $l['item_code'], $l['item_kind'], $l['description'], $l['sac'], $l['gst_rate'], $l['price_basis'], $l['period_start'],
-                $l['period_end'], $l['quantity'], $l['amount_paise'], $l['taxable'], $l['cgst'], $l['sgst'], $l['igst'], $l['total']]);
+                $l['period_end'], $l['quantity'], $l['amount_paise'], $l['taxable'], $l['cgst'], $l['sgst'], $l['igst'], $l['total'],
+                $l['list_amount_paise'] ?? null, $l['discount_paise'] ?? null, $l['discount_ref'] ?? null]);
         }
 
         $doc = $this->queries->invoice($id);

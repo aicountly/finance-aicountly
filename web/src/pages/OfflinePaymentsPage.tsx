@@ -17,6 +17,9 @@ const emptyLine = (): LineInput => ({
   period_end: '',
   quantity: '1',
   amount: '',
+  list_amount: '',
+  discount: '',
+  discount_ref: '',
 })
 
 function RecordDialog({ methods, states, onSaved, onClose }: { methods: Record<string, string>; states: Record<string, string>; onSaved: (msg: string) => void; onClose: () => void }) {
@@ -178,8 +181,9 @@ function RecordDialog({ methods, states, onSaved, onClose }: { methods: Record<s
             </div>
             <div className="form-row">
               <label className="field">
-                <span className="field-label">Amount (₹) *</span>
-                <input required inputMode="decimal" value={l.amount} onChange={setLine(i, 'amount')} placeholder="11800.00" />
+                <span className="field-label">Amount (₹){l.list_amount ? '' : ' *'}</span>
+                <input required={!l.list_amount} inputMode="decimal" value={l.amount} onChange={setLine(i, 'amount')}
+                  placeholder={l.list_amount ? 'list − discount' : '11800.00'} />
                 {err(`lines[${i}].amount`)}
               </label>
               <label className="field">
@@ -200,6 +204,29 @@ function RecordDialog({ methods, states, onSaved, onClose }: { methods: Record<s
                 {err(`lines[${i}].period_end`)}
               </label>
             </div>
+            <div className="form-row">
+              <label className="field">
+                <span className="field-label">List price (₹, optional)</span>
+                <input inputMode="decimal" value={l.list_amount ?? ''} onChange={setLine(i, 'list_amount')} placeholder="before discount" />
+                {err(`lines[${i}].list_amount`)}
+              </label>
+              <label className="field">
+                <span className="field-label">Discount (₹)</span>
+                <input inputMode="decimal" value={l.discount ?? ''} onChange={setLine(i, 'discount')} placeholder="from the Engage quote" />
+                {err(`lines[${i}].discount`)}
+              </label>
+              <label className="field">
+                <span className="field-label">Coupon code / quote ref</span>
+                <input className="mono" value={l.discount_ref ?? ''} onChange={setLine(i, 'discount_ref')} placeholder="DIWALI26" maxLength={64} />
+                {err(`lines[${i}].discount_ref`)}
+              </label>
+            </div>
+            {l.list_amount ? (
+              <p className="muted small">
+                Discounted line: the amount billed is the list price less the discount, and GST is charged on that (leave Amount empty to have it
+                computed). The invoice prints List price, Discount (code), Taxable value, GST and Total.
+              </p>
+            ) : null}
             {v.lines.length > 1 ? (
               <p>
                 <button type="button" className="link-button link-danger" onClick={() => setV({ ...v, lines: v.lines.filter((_, j) => j !== i) })}>
