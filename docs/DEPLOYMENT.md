@@ -184,7 +184,10 @@ Finance. Finance never moves money:
 4. **Bank file** — the approver generates the bulk-upload CSV (generic NEFT/IMPS,
    or the ICICI/HDFC-style layout — **confirm that format with your bank before
    the first upload**), downloads it (checksum shown and audited) and uploads it
-   to the bank portal by hand. The file debits a **company bank account**
+   to the bank portal by hand. Narrations are the Settings "Narration prefix"
+   (default `Aicountly Commission`, migration 007) plus the item or batch ref, at
+   most 30 characters, case kept in both formats — set an upper-case prefix if
+   your bank refuses lower case. The file debits a **company bank account**
    (Settings → Bank accounts): the default one is preselected, the approver can
    pick another active one; an account's own file format is preselected too
    (else the Settings default). Refused while no account is active. The batch

@@ -28,7 +28,7 @@ final class SettingsService
         'minimum_payout'       => '0.00',
         'bank_file_format'     => 'generic_neft_csv',
         'payment_mode'         => 'NEFT',
-        'narration_prefix'     => 'AICOUNTLY COMMISSION',
+        'narration_prefix'     => 'Aicountly Commission',
         'four_eyes_enabled'    => 'true',
     ];
 

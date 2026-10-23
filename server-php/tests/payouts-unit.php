@@ -274,7 +274,7 @@ test('bank files: generic NEFT/IMPS CSV and the bank-style variant', function ()
         ['item_ref' => 'IT-2', 'holder' => 'Ravi, Kumar', 'account' => '998877665544', 'ifsc' => 'ICIC0000001', 'net' => 50],
     ];
     $ctx = ['format' => 'generic_neft_csv', 'payment_mode' => 'NEFT', 'debit_account' => '123456789012', 'value_date' => '2026-10-19',
-        'narration_prefix' => 'AICOUNTLY COMMISSION', 'batch_ref' => 'PAYRUN-2026-W42'];
+        'narration_prefix' => 'Aicountly Commission', 'batch_ref' => 'PAYRUN-2026-W42'];
     $f = BankFileFormatter::build($rows, $ctx);
     $lines = explode("\r\n", trim($f['content']));
     same('Payment Mode,Beneficiary Name,Beneficiary Account Number,IFSC,Amount,Debit Account Number,Value Date,Narration,Customer Reference', $lines[0], 'header');
@@ -282,6 +282,7 @@ test('bank files: generic NEFT/IMPS CSV and the bank-style variant', function ()
     check(str_contains($lines[1], ',001234567890,HDFC0001234,14700.00,123456789012,19/10/2026,'), 'row fields: ' . $lines[1]);
     check(!str_contains($f['content'], '=HYPERLINK'), 'formula characters stripped from names');
     check(str_contains($lines[2], '"Ravi, Kumar"'), 'comma quoted');
+    check(str_contains($lines[1], ',19/10/2026,Aicountly Commission IT-1,IT-1'), 'narration keeps the prefix\'s mixed case: ' . $lines[1]);
     same(1470050, $f['total'], 'total');
     same(hash('sha256', $f['content']), $f['sha256'], 'checksum of the exact bytes');
     same("'-5", BankFileFormatter::csv(['-5']), 'leading minus neutralised');
@@ -289,6 +290,8 @@ test('bank files: generic NEFT/IMPS CSV and the bank-style variant', function ()
     $b = BankFileFormatter::build($rows, ['format' => 'icici_hdfc_style_csv'] + $ctx);
     check(str_starts_with($b['content'], 'PYMT_PROD_TYPE_CODE,PYMT_MODE,DEBIT_ACC_NO,BNF_NAME,BENE_ACC_NO'), 'bank-style header');
     check(str_contains($b['content'], 'PAB_VENDOR,NEFT,123456789012,'), 'bank-style row');
+    check(str_contains($b['content'], ',Aicountly Commission PAYRUN-20,Aicountly Commission IT-1,'), 'DEBIT_NARR / CREDIT_NARR: case kept, 30 characters');
+    same('Aicountly Commission', BankFileFormatter::text('Aicountly Commission', 30), 'text() never changes case');
     same(true, BankFileFormatter::FORMATS['icici_hdfc_style_csv']['confirm_format'], 'marked: confirm format with your bank');
     check(str_contains(BankFileFormatter::FORMATS['icici_hdfc_style_csv']['label'], 'confirm format with your bank'), 'label says so');
 });
