@@ -115,7 +115,8 @@ Idempotency-Key: lead-LD-2026-000123-fee-1          (8–100 of A-Z a-z 0-9 _ . 
             "state_code": "27", "address": "…", "pincode": "411001"},   // address + PIN required from ₹50,000 taxable (Rule 46(e))
   "amount_paise": 1180000,                             // what the student pays
   "fee": {"taxable_paise": 1000000, "cgst_paise": 90000, "sgst_paise": 90000, "igst_paise": 0,
-          "sac": "999293", "gst_rate": "18", "price_basis": "inclusive"},
+          "sac": "999293", "gst_rate": "18", "price_basis": "inclusive",
+          "list_amount_paise": 1475000, "discount_paise": 295000, "discount_ref": "SCHOLAR-25"},   // optional discount (below)
   "expire_at": "2026-11-15T23:59:59+05:30",            // optional: 15 min … 180 days; default 15 days
   "provider": "razorpay",                              // optional: razorpay | cashfree; default = the default connection
   "notify": {"sms": false, "email": false}             // optional: let the provider send the link too
@@ -128,6 +129,17 @@ SGST = floor(tax / 2) and CGST carrying the odd paisa. Otherwise it is inter-sta
 `inclusive`: tax = round_half_up(amount × R / (100 + R)). `exclusive`: tax = round_half_up(taxable × R / 100), and
 amount = taxable + tax. A difference answers `422 fee_breakdown_mismatch`, with `details.expected` carrying Finance's
 figures.
+
+**Discounts** (scholarship, coupon, Engage quote): optional `fee.list_amount_paise` + `fee.discount_paise` +
+`fee.discount_ref`, on the fee's price basis, with the same rules as invoice-line discounts
+([INVOICING.md "Discounted lines"](INVOICING.md)):
+
+- GST is on the price after discount, so `amount_paise` and the split above are those of the **discounted** fee;
+- list − discount must equal the fee as billed (`amount_paise`, or the taxable value when the price is exclusive);
+- a positive discount needs its ref, and the net may not fall below ₹1.
+
+Breaking a rule answers `422 validation_failed` (`fee.list_amount` / `fee.discount` / `fee.discount_ref`). The invoice
+line then carries the list price, the discount and the ref, and the link view returns `fee.discount`.
 
 Answer (`201`, AIC envelope `{"success":true,"data":…,"request_id":…}`):
 
@@ -239,7 +251,8 @@ shown as "Duplicate payment … refund it".
 - **Place of supply and tax:** place of supply is the student's state. Intra-state supplies carry CGST + SGST and
   inter-state supplies carry IGST, against the seller profile's state.
 - **Line:** one line, `item_code` = product code, `item_kind = academy_fee`, the link's description, SAC, rate and
-  basis. The amount equals the amount paid, or the payment shows `blocked_data`.
+  basis, and the fee's discount (list, discount, ref) when it has one. The amount equals the amount paid, or the
+  payment shows `blocked_data`.
 - **Payment block:** "Online payment" via Razorpay / Cashfree, with the provider payment id as the reference.
 - **Numbering and PDF:** the same gapless series and the same PDF as subscription invoices. GSTR-1 lists the invoice
   as B2CS, or B2CL above ₹1,00,000 inter-state.

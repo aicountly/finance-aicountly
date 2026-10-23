@@ -291,8 +291,8 @@ test('Engage creates a link (AIC-S2S, issue key, Idempotency-Key): GST split che
     same(['created', 'razorpay', 'test', 1180000, 0, 'EDGE-ADM-0001', $req['source_ref'], 'edge'], [$d['status'], $d['provider'], $d['mode'], $d['amount_paise'], $d['amount_paid_paise'],
         $d['academy_ref'], $d['source_ref'], $d['product_code']], 'link view');
     check(str_starts_with((string) $d['url'], 'https://rzp.test/i/plink_FAKE'), 'the Razorpay short URL');
-    same(['taxable_paise' => 1000000, 'cgst_paise' => 90000, 'sgst_paise' => 90000, 'igst_paise' => 0, 'sac' => SAC_TRAINING, 'gst_rate' => '18.00', 'price_basis' => 'inclusive'],
-        $d['fee'], 'fee snapshot');
+    same(['taxable_paise' => 1000000, 'cgst_paise' => 90000, 'sgst_paise' => 90000, 'igst_paise' => 0, 'sac' => SAC_TRAINING, 'gst_rate' => '18.00', 'price_basis' => 'inclusive',
+        'discount' => null], $d['fee'], 'fee snapshot (no discount)');
     $calls = gwCalls('POST /v1/payment_links');
     same($before + 1, count($calls), 'one call to Razorpay');
     $b = end($calls)['body'];
@@ -494,6 +494,30 @@ test('Razorpay link answer without its payments: confirmed through the payment i
     same(200, rzpHook(rzpPaidEvent($paid['link'], $paid['payment']), RZP_HOOK_SECRET, 'evt_D1')['status'], 'webhook');
     same('verified', paymentsOf((int) $link['id'])[0]['verification_status'], 'verified via GET /v1/payments/{id} (same order)');
     check(count(gwCalls('GET /v1/payments/' . $paid['payment']['id'])) === 1, 'the payment was read');
+});
+
+test('a discounted fee (scholarship): GST on the price after discount; the invoice line carries list, discount and ref (invoice-line discount rules)', function () use ($pdo): void {
+    $req = feeRequest('EDGE-ADM-0006');   // ₹11,800 incl. GST after a ₹2,950 scholarship on a ₹14,750 list fee
+    $bad = engage('POST', '', ['fee' => ['list_amount_paise' => 1475000, 'discount_paise' => 295000] + $req['fee']] + $req, ['idem' => 'lead-6-fee-x']);
+    same([422, 'validation_failed'], [$bad['status'], $bad['json']['error']['code'] ?? null], 'a discount needs its ref');
+    check(isset($bad['json']['error']['details']['fee.discount_ref']), 'fee.discount_ref named');
+    $off = engage('POST', '', ['fee' => ['list_amount_paise' => 1500000, 'discount_paise' => 295000, 'discount_ref' => 'SCHOLAR-25'] + $req['fee']] + $req, ['idem' => 'lead-6-fee-y']);
+    same([422, true], [$off['status'], isset($off['json']['error']['details']['fee.list_amount'])], 'list − discount must be the fee as billed');
+    $c = engage('POST', '', ['fee' => ['list_amount_paise' => 1475000, 'discount_paise' => 295000, 'discount_ref' => 'SCHOLAR-25'] + $req['fee']] + $req, ['idem' => 'lead-6-fee-1']);
+    same([201, 1180000, ['list_amount_paise' => 1475000, 'discount_paise' => 295000, 'discount_ref' => 'SCHOLAR-25']],
+        [$c['status'], $c['json']['data']['amount_paise'] ?? null, $c['json']['data']['fee']['discount'] ?? null], 'link: the student pays the discounted fee: ' . $c['body']);
+    $link = linkRow($c['json']['data']['link_id']);
+    $paid = gw('razorpay/pay', ['plink_id' => $link['provider_link_id']]);
+    same(200, rzpHook(rzpPaidEvent($paid['link'], $paid['payment']), RZP_HOOK_SECRET, 'evt_DISC1')['status'], 'webhook');
+    $p = paymentsOf((int) $link['id'])[0];
+    same(['verified', 'issued'], [$p['verification_status'], $p['invoice_state']], 'verified and invoiced: ' . $p['invoice_error']);
+    $inv  = $pdo->query("SELECT * FROM fin_invoices WHERE source_ref = 'payment:{$p['id']}'")->fetch();
+    $line = $pdo->query("SELECT * FROM fin_invoice_lines WHERE invoice_id = {$inv['id']}")->fetch();
+    same([1180000, 1475000, 295000, 'SCHOLAR-25', 1000000, 90000, 90000], [(int) $line['amount_paise'], (int) $line['list_amount_paise'], (int) $line['discount_paise'],
+        $line['discount_ref'], (int) $line['taxable_paise'], (int) $line['cgst_paise'], (int) $line['sgst_paise']], 'invoice line: list, discount, ref; GST on ₹11,800');
+    same(['academy_student', null], [$inv['buyer_kind'], $inv['cmp_id']], 'still a student invoice');
+    $html = (string) $pdo->query("SELECT html FROM fin_doc_pdfs WHERE invoice_id = {$inv['id']}")->fetchColumn();
+    check(str_contains($html, 'SCHOLAR-25') && str_contains($html, '14,750.00'), 'the printed invoice shows the list price and the discount ref');
 });
 
 test('events Finance must not act on: links made in the dashboard, unknown payments, refunds of foreign payments — logged as ignored', function () use ($pdo, &$L): void {

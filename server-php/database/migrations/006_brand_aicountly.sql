@@ -2,8 +2,7 @@
 --
 -- 003_invoicing.sql is already applied and is never edited (the migrator refuses a changed file), so its table comment
 -- is corrected here. Idempotent: COMMENT ON replaces the comment, so re-running is harmless.
--- Numbered 006: 004 is taken by the unmerged claude/rectify-2026-10 (004_invoice_line_discounts) and 005 by
--- 005_academy_fees; the migrator applies pending files in name order, so any landing order works.
+-- Numbered 006: after 004_invoice_line_discounts and 005_academy_fees; the migrator applies pending files in name order.
 --
 -- The payout narration prefix seeded by 001_payouts.sql ('AICOUNTLY COMMISSION') is handled by
 -- 007_narration_prefix_mixed_case (owner decision: "Aicountly Commission"; an admin's custom value is kept).

@@ -1,8 +1,8 @@
 -- 005_academy_fees — Aicountly Academy fees (Aicountly Edge, Aicountly Aspire) collected through Razorpay / Cashfree
 -- payment links (docs/ACADEMY_PAYMENTS.md).
 --
--- Numbered 005 (not 004) on purpose: the unmerged branch claude/rectify-2026-10 already carries
--- 004_invoice_line_discounts. The migrator applies pending files in name order, so either can land first.
+-- Numbered 005: 004_invoice_line_discounts (from claude/rectify-2026-10, now on main) comes first; the migrator applies
+-- pending files in name order.
 --
 -- Dormant until configured: nothing here is used until a finance admin saves a gateway connection, and the Engage routes
 -- answer 503 until FINANCE_INBOUND_ENGAGE_SECRET_<KEYID> is set. Payouts and subscription invoicing are unchanged for

@@ -16,6 +16,8 @@ export interface Fee {
   sac: string
   gst_rate: string
   price_basis: 'inclusive' | 'exclusive'
+  /** A scholarship / coupon Academy or Engage gave: list price less discount, on the fee's price basis. */
+  discount?: { list_amount_paise: number; discount_paise: number; discount_ref: string | null } | null
 }
 
 export interface GatewayPayment {

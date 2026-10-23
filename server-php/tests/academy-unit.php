@@ -345,6 +345,14 @@ test('link request: Finance recomputes the GST split (intra / inter-state, SGST 
     same([], $codes(['amount_paise' => 5900000, 'fee' => ['taxable_paise' => 5000000, 'cgst_paise' => 450000, 'sgst_paise' => 450000] + $base['fee'],
         'payer' => ['address' => '12 MG Road, Pune', 'pincode' => '411001'] + $base['payer']] + $base), '…and with them it passes');
 
+    $disc = ['fee' => ['list_amount_paise' => 1475001, 'discount_paise' => 295000, 'discount_ref' => 'SCHOLAR-25'] + $base['fee']] + $base;
+    same(['list_amount_paise' => 1475001, 'discount_paise' => 295000, 'discount_ref' => 'SCHOLAR-25'], PaymentLinkInput::validate($disc, '27', true, $now)['discount'],
+        'a discounted fee: list − discount = the amount billed');
+    same(null, $v['discount'], 'no discount');
+    same(['fee.discount_ref'], $codes(['fee' => ['discount_ref' => null] + $disc['fee']] + $disc), 'a positive discount names its ref');
+    same(['fee.list_amount'], $codes(['fee' => ['list_amount_paise' => 1475000] + $disc['fee']] + $disc), 'list − discount must equal the fee as billed');
+    same(['fee.discount', 'fee.list_amount'], $codes(['fee' => ['discount_paise' => 1474950] + $disc['fee']] + $disc), 'the net may not fall below ₹1');
+
     $staff = PaymentLinkInput::validate(['amount' => '11800.00', 'fee' => ['sac' => '999293', 'gst_rate' => '18', 'price_basis' => 'inclusive']]
         + array_diff_key($base, ['amount_paise' => 1, 'fee' => 1, 'source_ref' => 1]), '27', false, $now);
     same([1180000, 1000000, 90000, 90000, null, 'finance'], [$staff['amount_paise'], $staff['fee']['taxable_paise'], $staff['fee']['cgst_paise'], $staff['fee']['sgst_paise'],

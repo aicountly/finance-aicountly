@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace App\Services\AcademyFees;
 
 use App\Services\AuditLog;
+use App\Services\Invoicing\InvoiceInput;
 use App\Services\Invoicing\InvoiceService;
 use App\Support\ApiException;
 use App\Support\Gstin;
@@ -545,9 +546,19 @@ final class PaymentLinkService
 
     public static function fee(array $row): array
     {
+        $sent     = json_decode((string) ($row['fee_breakdown'] ?? 'null'), true);
+        $discount = null;
+        if (is_array($sent) && (isset($sent['discount_paise']) || isset($sent['discount']))) {
+            $errors = [];
+            $l = InvoiceInput::lines([['item_code' => 'x', 'item_kind' => 'x', 'description' => 'x', 'sac' => (string) $row['fee_sac'], 'gst_rate' => (string) $row['fee_gst_rate'],
+                'price_basis' => (string) $row['fee_price_basis'], 'amount_paise' => $row['fee_price_basis'] === 'exclusive' ? (int) $row['fee_taxable_paise'] : (int) $row['amount_paise']]
+                + array_intersect_key($sent, array_flip(PaymentLinkInput::DISCOUNT_FIELDS))], $errors)[0];
+            $discount = $errors === [] ? ['list_amount_paise' => $l['list_amount_paise'], 'discount_paise' => $l['discount_paise'], 'discount_ref' => $l['discount_ref']] : null;
+        }
+
         return ['taxable_paise' => (int) $row['fee_taxable_paise'], 'cgst_paise' => (int) $row['fee_cgst_paise'], 'sgst_paise' => (int) $row['fee_sgst_paise'],
             'igst_paise' => (int) $row['fee_igst_paise'], 'sac' => (string) $row['fee_sac'], 'gst_rate' => (string) $row['fee_gst_rate'],
-            'price_basis' => (string) $row['fee_price_basis']];
+            'price_basis' => (string) $row['fee_price_basis'], 'discount' => $discount];
     }
 
     public static function iso(mixed $ts): ?string

@@ -121,6 +121,9 @@ export function AcademyLinkPage() {
           <h3>Fee</h3>
           <p>
             {l.description}
+            {l.fee.discount
+              ? `\nList ${inrPaise(l.fee.discount.list_amount_paise)} less discount ${inrPaise(l.fee.discount.discount_paise)}${l.fee.discount.discount_ref ? ` (${l.fee.discount.discount_ref})` : ''}`
+              : ''}
             {'\n'}SAC {l.fee.sac} · GST {l.fee.gst_rate}% ({l.fee.price_basis})
             {'\n'}Taxable {inrPaise(l.fee.taxable_paise)}
             {intra ? ` + CGST ${inrPaise(l.fee.cgst_paise)} + SGST ${inrPaise(l.fee.sgst_paise)}` : ` + IGST ${inrPaise(l.fee.igst_paise)}`}

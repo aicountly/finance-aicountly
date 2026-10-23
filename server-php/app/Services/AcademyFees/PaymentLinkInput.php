@@ -23,6 +23,9 @@ use App\Support\Money;
  *   Staff (compute)   type amount (rupees: the fee incl. GST when inclusive, the taxable value when exclusive) and
  *                     fee {sac, gst_rate, price_basis}; Finance computes the split and the amount payable.
  *
+ * A fee may carry a discount (fee.list_amount_paise / discount_paise / discount_ref, the invoice-line discount fields):
+ * the amount and GST are on the price after discount; the invoice prints the list price, the discount and its ref.
+ *
  * Place of supply = the student's state (unregistered recipient with a known address, s.12(2)(b) IGST Act); the address
  * and PIN become required from a taxable value of ₹50,000 (CGST Rule 46(e)).
  */
@@ -170,6 +173,7 @@ final class PaymentLinkInput
                         'supply_type' => $intra ? 'intra_state' : 'inter_state'], 'sent' => $sent + ['amount_paise' => $amount]]);
             }
         }
+        $discount = self::discount($f, (int) $base, $product, $desc, $sac, (int) $rateBp, $basis);
         if ($line['taxable'] >= InvoiceService::UNREGISTERED_ADDRESS_THRESHOLD_PAISE && ($address === '' || $pincode === '')) {
             throw ApiException::coded(422, 'validation_failed', 'The payment link request is invalid.', [
                 'payer.address' => 'From a taxable value of ₹50,000 the invoice must carry the student\'s address and PIN (CGST Rule 46(e)).',
@@ -188,6 +192,7 @@ final class PaymentLinkInput
             'amount_paise'  => $line['total'],
             'fee'           => ['taxable_paise' => $line['taxable'], 'cgst_paise' => $line['cgst'], 'sgst_paise' => $line['sgst'], 'igst_paise' => $line['igst'],
                 'sac' => $sac, 'gst_rate' => Money::formatRate((int) $rateBp), 'price_basis' => $basis],
+            'discount'      => $discount,
             'fee_breakdown' => $strict ? $f : ['computed_by' => 'finance', 'amount' => Money::format((int) $base)] + $f,
             'seller_state'  => $sellerState,
             'place_of_supply' => $pos,
@@ -197,6 +202,43 @@ final class PaymentLinkInput
             'notify_sms'    => ($notify['sms'] ?? false) === true,
             'notify_email'  => ($notify['email'] ?? false) === true,
         ];
+    }
+
+    /** The discount fields a fee may carry (same names and rules as invoice lines, docs/INVOICING.md "Discounted lines"). */
+    public const DISCOUNT_FIELDS = ['list_amount_paise', 'list_amount', 'discount_paise', 'discount', 'discount_ref'];
+
+    /**
+     * Optional discount on the fee (a scholarship, a coupon, an Engage quote): fee.list_amount_paise + fee.discount_paise
+     * (or list_amount / discount in rupees) + fee.discount_ref, on the fee's price basis. GST stays on the price after
+     * discount, so the amount and split checked above are unchanged; the invoice prints "list less discount (ref)".
+     * Checked now with the invoice-line rules (list − discount must be the fee as billed, ref required, net ≥ ₹1), so a
+     * paid link can never be blocked by its discount later.
+     *
+     * @param array<string,mixed> $f
+     * @return array{list_amount_paise:int, discount_paise:int, discount_ref:?string}|null
+     */
+    private static function discount(array $f, int $base, string $product, string $desc, string $sac, int $rateBp, string $basis): ?array
+    {
+        $given = array_intersect_key($f, array_flip(self::DISCOUNT_FIELDS));
+        $given = array_filter($given, static fn ($v) => $v !== null && $v !== '');
+        if ($given === []) {
+            return null;
+        }
+        $errors = [];
+        $lines  = InvoiceInput::lines([['item_code' => $product, 'item_kind' => 'academy_fee', 'description' => $desc, 'sac' => $sac,
+            'gst_rate' => Money::formatRate($rateBp), 'price_basis' => $basis, 'amount_paise' => $base] + $given], $errors);
+        if ($errors !== []) {
+            $mapped = [];
+            foreach ($errors as $k => $msg) {
+                $field = str_replace('lines[0].', 'fee.', $k);
+                $mapped[$field === 'fee.amount' ? 'fee.list_amount' : $field] = $field === 'fee.amount'
+                    ? 'The list price less the discount must be the fee as billed (' . Money::format($base) . ').' : $msg;
+            }
+            throw ApiException::coded(422, 'validation_failed', 'The fee\'s discount is invalid.', $mapped);
+        }
+        $l = $lines[0];
+
+        return ['list_amount_paise' => (int) $l['list_amount_paise'], 'discount_paise' => (int) $l['discount_paise'], 'discount_ref' => $l['discount_ref']];
     }
 
     /** "+91 98765-43210" | "919876543210" | "09876543210" | "9876543210" → "+919876543210"; null when not an Indian mobile. */

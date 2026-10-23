@@ -11,8 +11,9 @@ use App\Support\FiscalYear;
 /**
  * InvoiceService::issueForPayment()'s view of an Aicountly Academy fee payment (fin_gateway_payments + the
  * fin_payment_links row it paid). The buyer is the student (buyer_kind academy_student: no Manage company, no GSTIN),
- * the place of supply the student's state, and the one line is the fee exactly as fixed on the link — so the invoice
- * total equals the amount the provider settled, or the payment is reported as blocked_data.
+ * the place of supply the student's state, and the one line is the fee exactly as fixed on the link (with its discount,
+ * if Academy / Engage gave one: list price, discount and ref, GST on the price after discount) — so the invoice total
+ * equals the amount the provider settled, or the payment is reported as blocked_data.
  *
  * Only a payment Finance has re-read from the provider (verification_status = verified) is 'verified' here; a second
  * payment on an already-paid link is never invoiced (it is reported 'duplicate' so staff refund it).
@@ -27,7 +28,8 @@ final class GatewayPaymentInvoiceSource implements PaymentInvoiceSource
     {
         $stmt = $this->pdo->prepare(
             'SELECT p.*, l.link_id AS link_ref, l.academy_ref, l.product_code, l.stream, l.description, l.payer_name, l.payer_email, l.payer_state_code,
-                    l.payer_address, l.payer_pincode, l.amount_paise AS link_amount_paise, l.fee_taxable_paise, l.fee_sac, l.fee_gst_rate, l.fee_price_basis
+                    l.payer_address, l.payer_pincode, l.amount_paise AS link_amount_paise, l.fee_taxable_paise, l.fee_sac, l.fee_gst_rate, l.fee_price_basis,
+                    l.fee_breakdown
                FROM fin_gateway_payments p JOIN fin_payment_links l ON l.id = p.link_id WHERE p.id = ?',
         );
         $stmt->execute([$paymentId]);
@@ -37,6 +39,9 @@ final class GatewayPaymentInvoiceSource implements PaymentInvoiceSource
         }
         $status = $r['verification_status'] === 'verified' && !self::isDuplicate($this->pdo, $r) ? 'verified' : (string) $r['verification_status'];
         $amount = $r['fee_price_basis'] === GstCalculator::EXCLUSIVE ? (int) $r['fee_taxable_paise'] : (int) $r['link_amount_paise'];
+        // A discount Academy / Engage gave on the fee (checked when the link was created) prints on the invoice line.
+        $fee      = json_decode((string) $r['fee_breakdown'], true);
+        $discount = is_array($fee) ? array_filter(array_intersect_key($fee, array_flip(PaymentLinkInput::DISCOUNT_FIELDS)), static fn ($v) => $v !== null && $v !== '') : [];
 
         return [
             'payment_id'   => (int) $r['id'],
@@ -62,7 +67,7 @@ final class GatewayPaymentInvoiceSource implements PaymentInvoiceSource
                 'price_basis'  => (string) $r['fee_price_basis'],
                 'quantity'     => 1,
                 'amount_paise' => $amount,
-            ]],
+            ] + $discount],
             'amount_paise' => (int) $r['amount_paise'],
             'gateway'      => GatewayConnectionService::PROVIDERS[$r['provider']] ?? (string) $r['provider'],
             'method'       => (string) ($r['method'] ?? ''),
