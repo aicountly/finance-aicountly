@@ -53,6 +53,11 @@
 <IfModule mod_headers.c>
   Header set X-Content-Type-Options "nosniff"
   Header set Referrer-Policy "strict-origin-when-cross-origin"
+  # Security audit, Oct 2026: framing only by this site, no powerful browser features, HSTS on HTTPS.
+  Header always set X-Frame-Options "SAMEORIGIN"
+  Header always set Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+  Header always set Content-Security-Policy "frame-ancestors 'self'; base-uri 'self'; object-src 'none'"
+  Header always set Strict-Transport-Security "max-age=31536000" env=HTTPS
 </IfModule>
 
 # Deny access to any dotfile that somehow lands in the docroot (e.g. .env),
