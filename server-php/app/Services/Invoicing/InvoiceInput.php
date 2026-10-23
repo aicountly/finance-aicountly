@@ -75,7 +75,8 @@ final class InvoiceInput
      * @param mixed $lines
      * @param array<string,string> $errors
      * @return list<array{item_code:string, item_kind:string, description:string, sac:string, gst_rate:string, rate_bp:int,
-     *                    price_basis:string, period_start:?string, period_end:?string, quantity:string, amount_paise:int}>
+     *                    price_basis:string, period_start:?string, period_end:?string, quantity:string, amount_paise:int,
+     *                    list_amount_paise:?int, discount_paise:?int, discount_ref:?string}>
      */
     public static function lines(mixed $lines, array &$errors): array
     {
@@ -134,13 +135,24 @@ final class InvoiceInput
             if (!preg_match('/^(?=.*[1-9])\d{1,9}(\.\d{1,3})?$/', $qty)) {
                 $errors[$k . 'quantity'] = 'A positive quantity (at most three decimals).';
             }
-            if (array_key_exists('amount_paise', $line)) {
+            [$list, $discount, $discountRef, $hasDiscount] = self::discount($line, $k, $errors);
+            $amountGiven = (array_key_exists('amount_paise', $line) && $line['amount_paise'] !== null)
+                || (array_key_exists('amount', $line) && $line['amount'] !== null && $line['amount'] !== '');
+            if (array_key_exists('amount_paise', $line) && $line['amount_paise'] !== null) {
                 $amount = is_int($line['amount_paise']) && $line['amount_paise'] > 0 && $line['amount_paise'] <= Money::MAX_PAISE ? $line['amount_paise'] : null;
             } else {
                 $amount = Money::parse($line['amount'] ?? null);
                 $amount = $amount !== null && $amount > 0 ? $amount : null;
             }
-            if ($amount === null) {
+            if ($hasDiscount && $list !== null && $discount !== null) {
+                // A discounted line: what is billed (and taxed) is list − discount.
+                $net = $list - $discount;
+                if (!$amountGiven) {
+                    $amount = $net;
+                } elseif ($amount !== null && $amount !== $net) {
+                    $errors[$k . 'amount'] = 'Must equal the list price less the discount (' . Money::format($net) . '), or be left out.';
+                }
+            } elseif ($amount === null && !$hasDiscount) {
                 $errors[$k . 'amount'] = 'The line amount in rupees (e.g. "11800.00"), more than zero.';
             }
             $out[] = [
@@ -155,6 +167,10 @@ final class InvoiceInput
                 'period_end'   => is_string($end) ? $end : null,
                 'quantity'     => $qty,
                 'amount_paise' => $amount ?? 0,
+                // Discounted line (docs/INVOICING.md "Discounted lines"): null on an ordinary line.
+                'list_amount_paise' => $hasDiscount ? $list : null,
+                'discount_paise'    => $hasDiscount ? $discount : null,
+                'discount_ref'      => $hasDiscount ? $discountRef : null,
             ];
         }
 
@@ -176,6 +192,58 @@ final class InvoiceInput
         }
 
         return ['lines' => $out, 'totals' => GstCalculator::totals($out)];
+    }
+
+    /**
+     * Optional discount of one line (contract §4.2). Given as list_amount_paise / discount_paise (integers) or
+     * list_amount / discount (rupees), plus discount_ref (the coupon code or the Engage quote_ref). All absent (or
+     * null) = an ordinary line. Rules: list > 0; 0 ≤ discount and, when positive, discount ≤ list − ₹1; a positive
+     * discount needs its ref (≤ 64 characters: letters, digits, / _ . : -).
+     *
+     * @param array<string,mixed> $line
+     * @param array<string,string> $errors
+     * @return array{0:?int, 1:?int, 2:?string, 3:bool} [list, discount, ref, hasDiscount]
+     */
+    private static function discount(array $line, string $k, array &$errors): array
+    {
+        $present = static fn (string $f): bool => array_key_exists($f, $line) && $line[$f] !== null && $line[$f] !== '';
+        if (!$present('list_amount_paise') && !$present('list_amount') && !$present('discount_paise') && !$present('discount') && !$present('discount_ref')) {
+            return [null, null, null, false];
+        }
+        $money = static function (string $intField, string $rupeeField) use ($line, $present): array {
+            if ($present($intField)) {
+                $v = $line[$intField];
+
+                return [is_int($v) && $v >= 0 && $v <= Money::MAX_PAISE ? $v : null, true];
+            }
+            if ($present($rupeeField)) {
+                $v = Money::parse($line[$rupeeField]);
+
+                return [$v !== null && $v >= 0 ? $v : null, true];
+            }
+
+            return [null, false];
+        };
+        [$list, $listGiven] = $money('list_amount_paise', 'list_amount');
+        [$discount, $discGiven] = $money('discount_paise', 'discount');
+        if (!$listGiven || $list === null || $list <= 0) {
+            $errors[$k . 'list_amount'] = 'The list price before the discount, in rupees (more than zero), on the line\'s price basis.';
+            $list = null;
+        }
+        if (!$discGiven || $discount === null) {
+            $errors[$k . 'discount'] = 'The discount in rupees (0 or more).';
+            $discount = null;
+        } elseif ($list !== null && $discount > 0 && $discount > $list - 100) {
+            $errors[$k . 'discount'] = 'At most ' . Money::format(max(0, $list - 100)) . ': the amount billed may not fall below ₹1 (a free plan is not a discount).';
+        }
+        $ref = is_scalar($line['discount_ref'] ?? null) ? trim((string) $line['discount_ref']) : '';
+        if ($ref !== '' && !preg_match('#^[A-Za-z0-9/_.:\-]{1,64}$#', $ref)) {
+            $errors[$k . 'discount_ref'] = 'The coupon code or quote reference: up to 64 letters, digits or / _ . : -';
+        } elseif ($ref === '' && $discount !== null && $discount > 0) {
+            $errors[$k . 'discount_ref'] = 'Name the discount (coupon code or quote reference) — it is printed on the invoice.';
+        }
+
+        return [$list, $discount, $ref === '' ? null : $ref, true];
     }
 
     /** @param array<string,string> $errors */

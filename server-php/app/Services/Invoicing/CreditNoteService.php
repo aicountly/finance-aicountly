@@ -85,10 +85,12 @@ final class CreditNoteService
             $id  = (int) $stmt->fetchColumn();
             $ins = $this->pdo->prepare(
                 'INSERT INTO fin_credit_note_lines (credit_note_id, line_no, invoice_line_id, description, sac, gst_rate, taxable_paise, cgst_paise, sgst_paise,
-                     igst_paise, total_paise) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                     igst_paise, total_paise, list_amount_paise, discount_paise, discount_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             );
             foreach ($lines as $i => $l) {
-                $ins->execute([$id, $i + 1, $l['invoice_line_id'], $l['description'], $l['sac'], $l['gst_rate'], $l['taxable'], $l['cgst'], $l['sgst'], $l['igst'], $l['total']]);
+                // A discounted invoice line's list / discount / ref are copied for reference; the credit is the net invoiced.
+                $ins->execute([$id, $i + 1, $l['invoice_line_id'], $l['description'], $l['sac'], $l['gst_rate'], $l['taxable'], $l['cgst'], $l['sgst'], $l['igst'], $l['total'],
+                    $l['list_amount_paise'], $l['discount_paise'], $l['discount_ref']]);
             }
             $this->audit->record($actor, 'credit_note.requested', 'credit_note', $id, null, [
                 'invoice_id' => $invoiceId, 'invoice_doc_no' => $inv['doc_no'], 'kind' => $kind, 'reason' => $reason, 'total_paise' => $totals['total'],
@@ -186,7 +188,8 @@ final class CreditNoteService
      */
     private function creditLines(int $invoiceId, string $kind, mixed $input, array $remaining, string $supplyType): array
     {
-        $stmt = $this->pdo->prepare('SELECT id, line_no, description, sac, gst_rate FROM fin_invoice_lines WHERE invoice_id = ? ORDER BY line_no');
+        $stmt = $this->pdo->prepare('SELECT id, line_no, description, sac, gst_rate, list_amount_paise, discount_paise, discount_ref
+            FROM fin_invoice_lines WHERE invoice_id = ? ORDER BY line_no');
         $stmt->execute([$invoiceId]);
         $invLines = [];
         foreach ($stmt->fetchAll() as $l) {
@@ -243,7 +246,10 @@ final class CreditNoteService
             } else {
                 $parts = self::splitGross($gross, Money::parseRate((string) $l['gst_rate'], 9999) ?? 0, $supplyType === 'intra_state', $r);
             }
-            $out[] = $parts + ['invoice_line_id' => $lineId, 'description' => $l['description'], 'sac' => $l['sac'], 'gst_rate' => $l['gst_rate']];
+            $out[] = $parts + ['invoice_line_id' => $lineId, 'description' => $l['description'], 'sac' => $l['sac'], 'gst_rate' => $l['gst_rate'],
+                'list_amount_paise' => $l['list_amount_paise'] === null ? null : (int) $l['list_amount_paise'],
+                'discount_paise'    => $l['discount_paise'] === null ? null : (int) $l['discount_paise'],
+                'discount_ref'      => $l['discount_ref']];
         }
 
         return $out;

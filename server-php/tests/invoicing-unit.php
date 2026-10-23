@@ -277,6 +277,89 @@ test('printable document: required blocks, Indian formatting, everything escaped
     check((bool) preg_match('/^[0-9A-HJKMNP-TV-Z]{26}$/', Ulid::generate()), 'ULID alphabet');
 });
 
+test('discounted lines: list − discount is billed and taxed; validation; every problem reported', function (): void {
+    $base = ['item_code' => 'books-pro', 'item_kind' => 'subscription', 'description' => 'Books Pro', 'sac' => '997331', 'gst_rate' => '18'];
+    // Inclusive ₹11,800 with ₹2,360 off (20 %): billed ₹9,440 → taxable ₹8,000 + GST ₹1,440 (GST on the price after discount).
+    $errors = [];
+    $l = InvoiceInput::lines([$base + ['price_basis' => 'inclusive', 'list_amount' => '11800.00', 'discount' => '2360.00', 'discount_ref' => 'DIWALI26']], $errors);
+    same([], $errors, 'valid discounted line');
+    same([944000, 1180000, 236000, 'DIWALI26'], [$l[0]['amount_paise'], $l[0]['list_amount_paise'], $l[0]['discount_paise'], $l[0]['discount_ref']], 'amount = list − discount');
+    $c = InvoiceInput::compute($l, '27', '27');
+    same([800000, 72000, 72000, 0, 944000], [$c['lines'][0]['taxable'], $c['lines'][0]['cgst'], $c['lines'][0]['sgst'], $c['lines'][0]['igst'], $c['lines'][0]['total']], 'inclusive: GST on the net');
+    // Exclusive ₹10,000 − ₹2,000 → taxable ₹8,000, IGST ₹1,440, total ₹9,440; the amount may also be given (must match).
+    $errors = [];
+    $l = InvoiceInput::lines([$base + ['price_basis' => 'exclusive', 'list_amount_paise' => 1000000, 'discount_paise' => 200000, 'discount_ref' => 'QTE-000012', 'amount_paise' => 800000]], $errors);
+    same([], $errors, 'valid exclusive discounted line with amount');
+    $c = InvoiceInput::compute($l, '27', '29');
+    same([800000, 144000, 944000], [$c['lines'][0]['taxable'], $c['lines'][0]['igst'], $c['lines'][0]['total']], 'exclusive: GST on the net');
+    // Zero discount needs no ref; the net may go down to ₹1 but not below.
+    $errors = [];
+    $l = InvoiceInput::lines([$base + ['price_basis' => 'exclusive', 'list_amount' => '500.00', 'discount' => '499.00', 'discount_ref' => 'X1'],
+        $base + ['price_basis' => 'exclusive', 'list_amount' => '500.00', 'discount' => '0']], $errors);
+    same([], $errors, 'net ₹1 allowed; zero discount allowed without a ref');
+    same([100, 50000, null], [$l[0]['amount_paise'], $l[1]['amount_paise'], $l[1]['discount_ref']], 'amounts');
+    // An ordinary line is unchanged (no discount keys set).
+    $errors = [];
+    $l = InvoiceInput::lines([$base + ['price_basis' => 'inclusive', 'amount' => '11800', 'list_amount' => null, 'discount_paise' => null, 'discount_ref' => '']], $errors);
+    same([[], 1180000, null, null, null], [$errors, $l[0]['amount_paise'], $l[0]['list_amount_paise'], $l[0]['discount_paise'], $l[0]['discount_ref']], 'ordinary line');
+
+    $errors = [];
+    InvoiceInput::lines([
+        $base + ['price_basis' => 'inclusive', 'list_amount' => '500.00', 'discount' => '499.50', 'discount_ref' => 'A'],
+        $base + ['price_basis' => 'inclusive', 'list_amount' => '500.00', 'discount' => '50.00'],
+        $base + ['price_basis' => 'inclusive', 'list_amount' => '500.00', 'discount' => '50.00', 'discount_ref' => 'A', 'amount' => '500.00'],
+        $base + ['price_basis' => 'inclusive', 'discount' => '50.00', 'discount_ref' => 'A'],
+        $base + ['price_basis' => 'inclusive', 'list_amount' => '500.00', 'discount' => '-1', 'discount_ref' => 'A'],
+        $base + ['price_basis' => 'inclusive', 'list_amount' => '500.00', 'discount' => '5', 'discount_ref' => 'bad ref!'],
+        $base + ['price_basis' => 'inclusive', 'amount' => '100', 'discount_ref' => 'ONLY-REF'],
+    ], $errors);
+    same(['lines[0].discount', 'lines[1].discount_ref', 'lines[2].amount', 'lines[3].list_amount', 'lines[4].discount', 'lines[5].discount_ref',
+        'lines[6].list_amount', 'lines[6].discount'], array_keys($errors), 'each discount problem');
+    check(str_contains($errors['lines[0].discount'], '499.00'), 'says the maximum discount');
+});
+
+test('printable document: discount columns only when a discount exists; old documents render byte-for-byte as before', function (): void {
+    $doc = [
+        'doc_type' => 'tax_invoice', 'doc_no' => 'AIC/26-27/000007', 'doc_date' => '2026-10-18', 'supply_type' => 'intra_state', 'reverse_charge' => false,
+        'place_of_supply' => ['code' => '27', 'name' => 'Maharashtra'],
+        'seller' => ['legal_name' => 'Aicountly Interactive', 'trade_name' => null, 'gstin' => '27AAPFU0939F1ZV', 'pan' => 'AAPFU0939F', 'address_line1' => '1 Street',
+            'address_line2' => null, 'city' => 'Mumbai', 'pincode' => '400001', 'state_code' => '27', 'state_name' => 'Maharashtra', 'email' => 'billing@aicountly.test',
+            'phone' => null, 'signatory_name' => 'R Gupta', 'signatory_designation' => 'Director'],
+        'buyer' => ['legal_name' => 'Acme Ltd', 'gstin' => null, 'state_code' => '27', 'state_name' => 'Maharashtra', 'address' => "Line 1\nLine 2",
+            'pincode' => '411001', 'country' => 'IN', 'email' => null],
+        'lines' => [['line_no' => 1, 'item_code' => 'books.business', 'description' => 'Smart Books — Business', 'sac' => '997331', 'quantity' => '1',
+            'period_start' => '2026-10-18', 'period_end' => '2027-10-17', 'taxable_paise' => 1000000, 'cgst_rate' => '9.00', 'cgst_paise' => 90000,
+            'sgst_rate' => '9.00', 'sgst_paise' => 90000, 'igst_rate' => '18.00', 'igst_paise' => 0, 'total_paise' => 1180000]],
+        'totals' => ['taxable_paise' => 1000000, 'cgst_paise' => 90000, 'sgst_paise' => 90000, 'igst_paise' => 0, 'total_paise' => 1180000],
+        'amount_in_words' => 'Rupees Eleven Thousand Eight Hundred Only',
+        'payment' => ['method' => 'neft', 'method_label' => 'NEFT', 'gateway' => null, 'reference' => 'HDFCN52026101800001', 'paid_on' => '2026-10-17'],
+        'original_invoice' => null,
+    ];
+    // sha256 of the HTML the pre-discount DocumentHtml produced for these documents (pinned before the change).
+    same('5c01766a05cd88d6d45770673165efb38f9bb3e49fffeacead750fa085c204ec', hash('sha256', DocumentHtml::render($doc)), 'invoice without discount: identical HTML');
+    $cn = ['doc_type' => 'credit_note', 'supply_type' => 'inter_state', 'payment' => null, 'reason' => 'Refund', 'kind' => 'full',
+        'original_invoice' => ['doc_no' => 'AIC/26-27/000007', 'doc_date' => '2026-10-18']] + $doc;
+    same('ccff2104f427611978585e104900a5271c5ee48b9c5d632e0bb65e1833b8571e', hash('sha256', DocumentHtml::render($cn)), 'credit note without discount: identical HTML');
+    $withNulls = $doc;
+    $withNulls['lines'][0] += ['list_amount_paise' => null, 'discount_paise' => null, 'discount_ref' => null, 'amount_paise' => 1180000, 'price_basis' => 'inclusive'];
+    same(hash('sha256', DocumentHtml::render($doc)), hash('sha256', DocumentHtml::render($withNulls)), 'null discount fields change nothing');
+
+    $disc = $doc;
+    $disc['lines'][0] = ['taxable_paise' => 800000, 'cgst_paise' => 72000, 'sgst_paise' => 72000, 'total_paise' => 944000, 'amount_paise' => 944000,
+        'price_basis' => 'inclusive', 'list_amount_paise' => 1180000, 'discount_paise' => 236000, 'discount_ref' => 'DIWALI<26>'] + $disc['lines'][0];
+    $disc['lines'][1] = ['line_no' => 2, 'description' => 'Add-on', 'amount_paise' => 11800, 'taxable_paise' => 10000, 'cgst_paise' => 900, 'sgst_paise' => 900,
+        'total_paise' => 11800, 'price_basis' => 'inclusive', 'list_amount_paise' => null, 'discount_paise' => null, 'discount_ref' => null] + $doc['lines'][0];
+    $html = DocumentHtml::render($disc);
+    foreach (['<th class="r">List price</th><th class="r">Discount</th><th class="r">Taxable value</th>', '₹11,800.00<div class="sub">incl. GST</div>',
+              '&minus;₹2,360.00<div class="sub">DIWALI&lt;26&gt;</div>', '₹8,000.00', '₹720.00', '₹9,440.00', '<td class="r">&mdash;</td>',
+              'the taxable value and GST are on the price after discount'] as $needle) {
+        check(str_contains($html, $needle), "discounted invoice contains {$needle}");
+    }
+    $cnHtml = DocumentHtml::render(['doc_type' => 'credit_note', 'payment' => null, 'reason' => 'Refund', 'original_invoice' => ['doc_no' => 'AIC/26-27/000007', 'doc_date' => '2026-10-18']] + $disc);
+    check(!str_contains($cnHtml, 'List price'), 'credit note keeps its columns');
+    check(str_contains($cnHtml, 'Original invoice line: list ₹11,800.00 less discount ₹2,360.00 (DIWALI&lt;26&gt;); credited on the discounted value'), 'credit note names the discount');
+});
+
 test('routes: S2S routes are signed GET reads for Manage only; nothing else is reachable without a staff session', function (): void {
     $routes = require __DIR__ . '/../app/Config/Routes.php';
     $public = [];

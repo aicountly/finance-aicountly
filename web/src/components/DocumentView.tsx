@@ -89,6 +89,11 @@ export function DocumentView({ doc }: { doc: Invoice | CreditNote }) {
                     {l.quantity ? ` · qty ${l.quantity}` : ''}
                     {l.price_basis ? ` · price ${l.price_basis} of GST` : ''}
                   </div>
+                  {l.discount_paise ? (
+                    <div className="muted small">
+                      List {inrPaise(l.list_amount_paise ?? 0)} − discount {inrPaise(l.discount_paise)} ({l.discount_ref}) — GST on the price after discount
+                    </div>
+                  ) : null}
                 </td>
                 <td className="mono">{l.sac}</td>
                 <td className="num">{rate(l.gst_rate)}</td>
