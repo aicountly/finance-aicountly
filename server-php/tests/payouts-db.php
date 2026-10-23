@@ -52,8 +52,8 @@ const ENGAGE_OUT_KEY = 'finance-to-engage-callback-key-0123456789abcdef';
 
 test('migrations: applied once, re-run is a no-op, an edited migration is refused', function () use ($pdo, $cacheDir): void {
     $m = new Migrator($pdo, __DIR__ . '/../database/migrations');
-    same(['001_payouts', '002_company_bank_accounts', '003_invoicing', '005_academy_fees', '006_brand_aicountly', '007_narration_prefix_mixed_case'], $m->migrate(),
-        'first run applies 001, 002, 003, 005, 006 and 007');
+    same(['001_payouts', '002_company_bank_accounts', '003_invoicing', '004_invoice_line_discounts', '005_academy_fees', '006_brand_aicountly',
+        '007_narration_prefix_mixed_case'], $m->migrate(), 'first run applies 001–007 in order (004 discounted invoice lines, 005 Academy fees, 006/007 brand)');
     same([], $m->migrate(), 'second run applies nothing');
     check(str_starts_with((string) $pdo->query("SELECT obj_description('fin_invoices'::regclass, 'pg_class')")->fetchColumn(), 'GST tax invoices for Aicountly subscriptions'),
         '006 writes the brand as Aicountly in the table comment');

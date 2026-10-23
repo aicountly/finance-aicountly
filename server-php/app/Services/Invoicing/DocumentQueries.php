@@ -218,6 +218,10 @@ final class DocumentQueries
                 'igst_rate'     => (string) $l['gst_rate'],
                 'igst_paise'    => (int) $l['igst_paise'],
                 'total_paise'   => (int) $l['total_paise'],
+                // Discounted line (004): null on an ordinary line. Credit notes carry the invoice line's values.
+                'list_amount_paise' => isset($l['list_amount_paise']) ? (int) $l['list_amount_paise'] : null,
+                'discount_paise'    => isset($l['discount_paise']) ? (int) $l['discount_paise'] : null,
+                'discount_ref'      => $l['discount_ref'] ?? null,
                 'invoice_line_id' => isset($l['invoice_line_id']) ? (int) $l['invoice_line_id'] : null,
                 'id'            => (int) $l['id'],
             ];

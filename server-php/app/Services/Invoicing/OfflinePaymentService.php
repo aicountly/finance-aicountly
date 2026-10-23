@@ -104,7 +104,9 @@ final class OfflinePaymentService
                      buyer_email, lines, amount_paise, method, utr, received_on, note, recorded_by)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?) RETURNING id',
             );
-            $stored = array_map(static fn (array $l): array => array_diff_key($l, ['rate_bp' => 1]), $lines);
+            // An ordinary line is stored exactly as before (no discount keys); a discounted one keeps list / discount / ref.
+            $stored = array_map(static fn (array $l): array => array_filter(array_diff_key($l, ['rate_bp' => 1]),
+                static fn ($v, string $k): bool => $v !== null || !in_array($k, ['list_amount_paise', 'discount_paise', 'discount_ref'], true), ARRAY_FILTER_USE_BOTH), $lines);
             $stmt->execute([$cmpId, $uuid === '' ? null : $uuid, $buyer['legal_name'], $buyer['gstin'], $buyer['state_code'], $buyer['address'], $buyer['pincode'],
                 $buyer['country'], $buyer['email'], json_encode($stored, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR), $amount, $method,
                 $utr, $received, $note === '' ? null : $note, $actor['actor']]);
@@ -297,7 +299,9 @@ final class OfflinePaymentService
                 'description' => $l['description'], 'sac' => $l['sac'], 'gst_rate' => $l['gst_rate'], 'price_basis' => $l['price_basis'],
                 'amount_paise' => $l['amount_paise'], 'taxable_paise' => $l['taxable'], 'cgst_paise' => $l['cgst'], 'sgst_paise' => $l['sgst'],
                 'igst_paise' => $l['igst'], 'total_paise' => $l['total'],
-            ], $calc['lines']),
+            ] + ($l['list_amount_paise'] !== null ? [
+                'list_amount_paise' => $l['list_amount_paise'], 'discount_paise' => $l['discount_paise'], 'discount_ref' => $l['discount_ref'],
+            ] : []), $calc['lines']),
             'totals'          => [
                 'taxable_paise' => $calc['totals']['taxable'], 'cgst_paise' => $calc['totals']['cgst'], 'sgst_paise' => $calc['totals']['sgst'],
                 'igst_paise' => $calc['totals']['igst'], 'total_paise' => $calc['totals']['total'],

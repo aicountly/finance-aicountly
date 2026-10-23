@@ -715,6 +715,69 @@ test('GSTR-1 CSV: B2B / B2CL / B2CS / CDNR, GSTIN, POS, rates, tax heads, SAC; e
     same(422, api('GET', 'v1/invoices?fy=2026', $T['viewer'], null, [], $iapi)['status'], 'bad fy → 422');
 });
 
+test('discounted lines: offline payment → invoice with list / discount / taxable / GST; credit note copies them; old invoices unchanged', function () use ($iapi, $T, $pdo, $BUYER, &$ids): void {
+    $disc = ['amount' => null, 'list_amount' => '11800.00', 'discount' => '2360.00', 'discount_ref' => 'DIWALI26', 'description' => 'Books Pro (coupon DIWALI26)'];
+    $pv = api('POST', 'v1/offline-payments/preview', $T['alice'], ['buyer' => $BUYER['A'], 'lines' => offlineBody(120, $BUYER['A'], '9440.00', 'X', $disc)['lines']], [], $iapi);
+    same(200, $pv['status'], 'preview');
+    same([944000, 1180000, 236000, 'DIWALI26', 800000, 944000], [$pv['json']['data']['lines'][0]['amount_paise'], $pv['json']['data']['lines'][0]['list_amount_paise'],
+        $pv['json']['data']['lines'][0]['discount_paise'], $pv['json']['data']['lines'][0]['discount_ref'], $pv['json']['data']['totals']['taxable_paise'],
+        $pv['json']['data']['totals']['total_paise']], 'preview shows the discount and GST on the net');
+    $bad = api('POST', 'v1/offline-payments', $T['alice'], offlineBody(120, $BUYER['A'], '9440.00', 'HDFCN52026101800120', ['discount' => '11799.50'] + $disc), [], $iapi);
+    same([422, true], [$bad['status'], isset($bad['json']['errors']['lines[0].discount'])], 'discount above list − ₹1 → 422');
+    $mm = api('POST', 'v1/offline-payments', $T['alice'], offlineBody(120, $BUYER['A'], '11800.00', 'HDFCN52026101800120', $disc), [], $iapi);
+    same([422, 'amount_mismatch'], [$mm['status'], $mm['json']['errors']['code'] ?? null], 'the amount received is the discounted total');
+
+    $p = api('POST', 'v1/offline-payments', $T['alice'], offlineBody(120, $BUYER['A'], '9440.00', 'HDFCN52026101800120', $disc), [], $iapi);
+    same(201, $p['status'], 'recorded');
+    $stored = json_decode((string) $pdo->query("SELECT lines FROM fin_offline_payments WHERE id = {$p['json']['data']['id']}")->fetchColumn(), true);
+    same([944000, 1180000, 236000, 'DIWALI26'], [$stored[0]['amount_paise'], $stored[0]['list_amount_paise'], $stored[0]['discount_paise'], $stored[0]['discount_ref']], 'stored with the payment');
+    $plainStored = json_decode((string) $pdo->query('SELECT lines FROM fin_offline_payments WHERE cmp_id = 101 ORDER BY id LIMIT 1')->fetchColumn(), true);
+    check(!array_key_exists('discount_paise', $plainStored[0]), 'an ordinary payment line is stored as before');
+
+    $v = api('POST', "v1/offline-payments/{$p['json']['data']['id']}/verify", $T['carol'], [], [], $iapi);
+    same([200, 'issued'], [$v['status'], $v['json']['data']['invoice_state']], 'verified → invoice issued');
+    $invId = $v['json']['data']['invoice']['id'];
+    $ids['INV_DISC'] = $invId;
+    $line = $pdo->query("SELECT * FROM fin_invoice_lines WHERE invoice_id = {$invId}")->fetch();
+    same([944000, 1180000, 236000, 'DIWALI26', 800000, 72000, 72000, 944000], [(int) $line['amount_paise'], (int) $line['list_amount_paise'], (int) $line['discount_paise'],
+        $line['discount_ref'], (int) $line['taxable_paise'], (int) $line['cgst_paise'], (int) $line['sgst_paise'], (int) $line['total_paise']], 'line stored: GST on list − discount');
+    $doc = api('GET', "v1/invoices/{$invId}", $T['viewer'], null, [], $iapi)['json']['data'];
+    same([1180000, 236000, 'DIWALI26', 944000], [$doc['lines'][0]['list_amount_paise'], $doc['lines'][0]['discount_paise'], $doc['lines'][0]['discount_ref'], $doc['total_paise']], 'staff detail');
+    $html = (string) pdfRow('invoice_id', $invId)['html'];
+    foreach (['List price', 'Discount', '₹11,800.00', '&minus;₹2,360.00', 'DIWALI26', '₹8,000.00', '₹720.00', '₹9,440.00'] as $needle) {
+        check(str_contains($html, $needle), "PDF HTML shows {$needle}");
+    }
+    check(!str_contains((string) pdfRow('invoice_id', $ids['INV2'])['html'], 'List price'), 'an invoice without discount has no discount columns');
+    same([null, null, null], array_values(array_intersect_key(api('GET', "v1/invoices/{$ids['INV2']}", $T['viewer'], null, [], $iapi)['json']['data']['lines'][0],
+        array_flip(['list_amount_paise', 'discount_paise', 'discount_ref']))), 'old lines: the new fields are null');
+    $m = s2s($iapi, "documents/{$doc['document_id']}", ['cmp_id' => 120]);
+    same([200, 'DIWALI26', 236000], [$m['status'], $m['json']['data']['lines'][0]['discount_ref'], $m['json']['data']['lines'][0]['discount_paise']], 'Manage sees the discount (additive fields)');
+    same(1, (int) $pdo->query("SELECT count(*) FROM pg_constraint WHERE conname IN ('fin_invoice_lines_discount_chk')")->fetchColumn(), 'DB check present');
+
+    // Exclusive basis: ₹10,000 − ₹2,000 → IGST 18 % on ₹8,000.
+    $ex = api('POST', 'v1/offline-payments', $T['alice'], offlineBody(121, $BUYER['B'], '9440.00', 'ICICN52026101800121',
+        ['price_basis' => 'exclusive', 'amount' => null, 'list_amount' => '10000.00', 'discount' => '2000.00', 'discount_ref' => 'QTE-000012']), [], $iapi);
+    same(201, $ex['status'], 'exclusive discounted payment recorded');
+    $exInv = api('POST', "v1/offline-payments/{$ex['json']['data']['id']}/verify", $T['carol'], [], [], $iapi)['json']['data']['invoice']['id'];
+    $exRow = invoiceRow($exInv);
+    same([800000, 144000, 944000], [(int) $exRow['taxable_paise'], (int) $exRow['igst_paise'], (int) $exRow['total_paise']], 'exclusive: taxable = list − discount, GST on top');
+
+    // Full credit note: refunds the net invoiced, copies the discount for reference.
+    $cn = api('POST', "v1/invoices/{$invId}/credit-notes", $T['alice'], ['kind' => 'full', 'reason' => 'Subscription cancelled'], [], $iapi)['json']['data'];
+    same([944000, 800000], [$cn['total_paise'], $cn['totals']['taxable_paise']], 'credit = the net paid, never the discount');
+    same([1180000, 236000, 'DIWALI26'], [$cn['lines'][0]['list_amount_paise'], $cn['lines'][0]['discount_paise'], $cn['lines'][0]['discount_ref']], 'credit note line copies the discount');
+    $ok = api('POST', "v1/credit-notes/{$cn['id']}/approve", $T['carol'], [], [], $iapi);
+    same(200, $ok['status'], 'credit note issued');
+    check(str_contains((string) pdfRow('credit_note_id', $cn['id'])['html'], 'Original invoice line: list ₹11,800.00 less discount ₹2,360.00 (DIWALI26)'), 'credit note PDF names the discount');
+    $cnl = $pdo->query("SELECT l.* FROM fin_credit_note_lines l WHERE l.credit_note_id = {$cn['id']}")->fetch();
+    same([1180000, 236000, 'DIWALI26', 944000], [(int) $cnl['list_amount_paise'], (int) $cnl['discount_paise'], $cnl['discount_ref'], (int) $cnl['total_paise']], 'stored on the credit note line');
+    // Partial credit note on the exclusive invoice also copies the reference.
+    $exLine = api('GET', "v1/invoices/{$exInv}", $T['alice'], null, [], $iapi)['json']['data']['lines'][0];
+    $pc = api('POST', "v1/invoices/{$exInv}/credit-notes", $T['alice'], ['kind' => 'partial', 'reason' => 'Goodwill', 'lines' => [['invoice_line_id' => $exLine['id'], 'amount' => '118.00']]], [], $iapi)['json']['data'];
+    same([11800, 'QTE-000012'], [$pc['total_paise'], $pc['lines'][0]['discount_ref']], 'partial: GST-inclusive amount credited; discount ref copied');
+    refusedSql("UPDATE fin_invoice_lines SET discount_paise = 0 WHERE invoice_id = {$invId}", 'immutable', 'a discounted line is immutable like any line');
+});
+
 test('health: invoicing ready once configured; top-level status still the payout readiness; payouts untouched', function () use ($iapi, $payoutCounts, $payoutsBefore): void {
     $h = http('GET', $iapi . '/api/health');
     $d = $h['json']['data'];

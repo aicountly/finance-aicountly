@@ -45,7 +45,7 @@ are also database constraints (`fin_offline_payments_four_eyes`, `fin_credit_not
 | `fin_seller_profile` | the seller printed on documents: legal / trade name, GSTIN, PAN (must be the PAN inside the GSTIN), address, state (from the GSTIN), signatory, `effective_from`. One active row; saving inserts a new row and retires the old one (rows are never edited or deleted — trigger). |
 | `fin_doc_series` | one series per FY and `doc_type` (`tax_invoice` / `credit_note`): `prefix`, `next_no`, `width`. `prefix + width ≤ 16`, the prefix may not end in a digit, and a prefix is unique within its FY, so every number is unique within the FY across both document types. Prefix / width / next number can change only while no document is numbered from the series; `next_no` never goes back. |
 | `fin_offline_payments` | staff-recorded receipts: company (`cmp_id`), buyer snapshot, lines, amount, method (NEFT / RTGS / IMPS / UPI / cheque), UTR (unique among non-rejected rows), received date, maker / checker, `status` recorded → verified \| rejected, `invoice_state` not_issued \| issued \| blocked_config \| blocked_data. What was recorded never changes (trigger). |
-| `fin_invoices` + `fin_invoice_lines` | issued tax invoices. Public id `fin_inv_<ULID>`, `cmp_id`, number, date, FY, seller snapshot (JSON + GSTIN / state columns), buyer snapshot (legal name, GSTIN or null, state, address, PIN, email), place of supply, intra / inter-state, totals in paise, amount in words, payment block (method, gateway, reference, date), `source_ref` (`offline:<id>` / `payment:<id>`, unique), `payment_id` (unique, for Phase B) or `offline_payment_id` (unique). Lines: `item_code`, `item_kind`, description, SAC, GST rate, price basis, period, quantity, amount as billed, taxable value and CGST / SGST / IGST in paise. `status` issued \| partially_credited \| credited with `credited_paise`. |
+| `fin_invoices` + `fin_invoice_lines` | issued tax invoices. Public id `fin_inv_<ULID>`, `cmp_id`, number, date, FY, seller snapshot (JSON + GSTIN / state columns), buyer snapshot (legal name, GSTIN or null, state, address, PIN, email), place of supply, intra / inter-state, totals in paise, amount in words, payment block (method, gateway, reference, date), `source_ref` (`offline:<id>` / `payment:<id>`, unique), `payment_id` (unique, for Phase B) or `offline_payment_id` (unique). Lines: `item_code`, `item_kind`, description, SAC, GST rate, price basis, period, quantity, amount as billed, taxable value and CGST / SGST / IGST in paise; optional `list_amount_paise`, `discount_paise`, `discount_ref` for a discounted line (migration `004`). `status` issued \| partially_credited \| credited with `credited_paise`. |
 | `fin_credit_notes` + `fin_credit_note_lines` | credit notes against one invoice (same company, trigger-checked): kind full / partial, reason, amounts per invoice line; `status` pending_approval → issued \| rejected. Number, date and seller snapshot are assigned at approval. |
 | `fin_doc_pdfs` | per document: the HTML stored in the issuing transaction (+ sha256) and the PDF bytes (+ sha256) once rendered. |
 | `fin_s2s_nonces`, `fin_s2s_rate`, `fin_s2s_access_log` | AIC-S2S replay guard (600 s), per-key one-minute rate windows, access log of Manage list / detail reads (kept 180 days). |
@@ -86,6 +86,51 @@ A series whose numbers no longer fit its width answers `422 series_exhausted`.
   are refused (exports are not supported in Phase A).
 - Amount in words: Indian system (thousand / lakh / crore), "Rupees … and … Paise Only" — ported from Smart Books'
   `AmountInWordsService` (attribution in `App\Support\AmountInWords`).
+
+### Discounted lines (migration `004_invoice_line_discounts`, contract §4.2, founder decision D-C1)
+
+A discount agreed before supply (an Engage coupon / quote) is printed on the invoice and **GST is charged on the price
+after discount**. A line may carry three additive, nullable fields:
+
+| Field | Meaning |
+| --- | --- |
+| `list_amount_paise` (or `list_amount` in rupees) | the list price before the discount, on the line's own price basis |
+| `discount_paise` (or `discount`) | the discount, same basis |
+| `discount_ref` | the coupon code or Engage `quote_ref`, printed next to the discount (≤ 64 characters: letters, digits, `/ _ . : -`) |
+
+- The amount billed is `amount = list − discount` (leave `amount` out and it is computed; if given it must match). The
+  unchanged GstCalculator runs on that amount, so the taxable value and GST are on the discounted price: inclusive
+  ₹11,800 with ₹2,360 off → billed ₹9,440 = taxable ₹8,000 + GST ₹1,440; exclusive ₹10,000 with ₹2,000 off → taxable
+  ₹8,000 + GST ₹1,440 = ₹9,440. The amount received must equal that discounted total.
+- Validation (422, per line): list > 0; discount ≥ 0; a positive discount ≤ list − ₹1 (the net is never below ₹1 — a
+  free plan is not a discount) and names its `discount_ref`. Database check `fin_invoice_lines_discount_chk`: all
+  three null, or `list = amount + discount` with the same bounds.
+- The PDF shows **List price** and **Discount (code)** columns before Taxable value, GST and Total — only on an invoice
+  that has a discount, with a note that GST is on the price after discount. A document without a discount renders
+  byte-for-byte as before (pinned in `tests/invoicing-unit.php`); stored documents are never re-rendered anyway.
+- **Credit notes** copy the invoice line's `list_amount_paise`, `discount_paise` and `discount_ref`; what they credit is
+  still the net invoiced (taxable + GST of the line, full or partial), never the discount. The credit note PDF names
+  the original discount under the line.
+- The staff detail and the Manage read API (`documents/{id}`) return the three fields per line (null on ordinary
+  lines; additive). Offline payment preview returns them too.
+- Staff screen: Offline payments → Record payment → per line *List price*, *Discount*, *Coupon code / quote ref*
+  (leave *Amount* empty). Engage's quote (docs/COUPONS.md in engage-aicountly) gives the exact figures to type.
+
+#### Engage quote → invoice line (field mapping, checked at integration 2026-10)
+
+| Engage quote (`POST /api/v1/quotes` → `data`, or `data.finance_line`) | Finance invoice line field | Note |
+| --- | --- | --- |
+| `finance_line.amount_paise` = `net_paise` | `amount_paise` (or leave out: computed as list − discount) | on the offer's price basis |
+| `finance_line.list_amount_paise` = `list_paise` | `list_amount_paise` | null when no discount |
+| `finance_line.discount_paise` = `discount_paise` | `discount_paise` | null when no discount; Engage caps it at list − 100, Finance validates the same bound |
+| `finance_line.discount_ref` = the coupon code | `discount_ref` | the `quote_ref` (`QTE-…`) is also accepted by Finance |
+| `finance_line.price_basis` (`price.basis` of the offer) | `price_basis` (`inclusive` / `exclusive`) | |
+| `finance_line.gst_rate` (`gst_rate`) | `gst_rate` (percent) | |
+| `finance_line.sac` | `sac` | |
+| `taxable_paise`, `gst_paise`, `total_paise` | computed by Finance's GstCalculator on `amount` — must equal the quote's | same formula, integer paise, round half up per line |
+| `quote_ref` | (not on the line) — staff then issue/renew the licence in Engage with this `quote_ref` | commits the redemption |
+
+Seller commission in Engage uses the quote's taxable value (net before GST), i.e. this line's taxable value.
 
 ### Credit notes
 

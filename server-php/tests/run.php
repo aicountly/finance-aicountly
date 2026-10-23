@@ -450,6 +450,20 @@ test('not configured: token roles trusted; token without roles refused', functio
     same(401, me($apiUnconfigured, mintToken([]))['status'], 'pre-roles token');
 });
 
+test('errors are hidden unless APP_ENV explicitly says development', function (): void {
+    $src = (string) file_get_contents(__DIR__ . '/../public/index.php');
+    check(str_contains($src, "\$_ENV['APP_ENV'] ?? 'production'"), 'a missing APP_ENV means production');
+    check(str_contains($src, "['development', 'local', 'testing']"), 'display_errors only for development / local / testing');
+});
+
+test('a validly signed token without exp is refused (it would never expire)', function () use ($apiUnconfigured): void {
+    $noExp = jwt_encode(['sub' => 77, 'email' => 'meera@aicountly.com', 'roles' => ['finance_viewer'], 'iat' => time()], JWT_SECRET);
+    same(401, me($apiUnconfigured, $noExp)['status'], 'no exp');
+    $expired = mintToken(['roles' => ['finance_viewer'], 'exp' => time() - 5]);
+    same(401, me($apiUnconfigured, $expired)['status'], 'expired');
+    same(200, me($apiUnconfigured, mintToken(['roles' => ['finance_viewer']]))['status'], 'normal token still works');
+});
+
 test('no JWT_SECRET: forged tokens refused and sign-in fails closed', function () use ($apiNoSecret): void {
     $header = base64url_encode('{"alg":"HS256","typ":"JWT"}');
     $body = base64url_encode(json_encode([
