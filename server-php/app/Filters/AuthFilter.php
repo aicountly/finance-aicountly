@@ -85,7 +85,8 @@ class AuthFilter
             json_unauthorized('Invalid token.');
         }
 
-        if (isset($payload['exp']) && (int) $payload['exp'] < time()) {
+        // Every Finance JWT is issued with exp (AuthController::issueToken); one without it would never expire.
+        if (!isset($payload['exp']) || !is_numeric($payload['exp']) || (int) $payload['exp'] < time()) {
             json_unauthorized('Token has expired.');
         }
 
