@@ -150,7 +150,7 @@ test('numbering: format, width, 16-character limit, series validation', function
 
 test('seller profile validation: GSTIN, PAN inside it, state from it', function (): void {
     $gstin = testGstin('27', 'AAJCA4321K');
-    $v = SellerProfileService::validate(['legal_name' => 'Aicountly Interactive Services Pvt Ltd', 'gstin' => strtolower($gstin), 'address_line1' => '1 Test Street',
+    $v = SellerProfileService::validate(['legal_name' => 'Aicountly Interactive Services Private Limited', 'gstin' => strtolower($gstin), 'address_line1' => '1 Test Street',
         'city' => 'Mumbai', 'pincode' => '400001', 'signatory_name' => 'A Director', 'effective_from' => '2026-10-01']);
     same([$gstin, 'AAJCA4321K', '27'], [$v['gstin'], $v['pan'], $v['state_code']], 'PAN and state derived from the GSTIN');
     $e = throwsApi(422, static fn () => SellerProfileService::validate(['legal_name' => '', 'gstin' => $gstin, 'pan' => 'ZZZZZ9999Z', 'state_code' => '29',

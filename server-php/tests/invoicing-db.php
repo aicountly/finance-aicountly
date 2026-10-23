@@ -213,7 +213,7 @@ test('dormant until configured: health reports it, the Manage API answers 503, s
 });
 
 test('seller profile: finance_admin only; saving retires the previous one (history); rows are immutable', function () use ($iapi, $T, $pdo, $SELLER_GSTIN): void {
-    $profile = ['legal_name' => 'Aicountly Interactive Services Pvt Ltd', 'gstin' => $SELLER_GSTIN, 'address_line1' => '501 Test Towers', 'address_line2' => 'Lower Parel',
+    $profile = ['legal_name' => 'Aicountly Interactive Services Private Limited', 'gstin' => $SELLER_GSTIN, 'address_line1' => '501 Test Towers', 'address_line2' => 'Lower Parel',
         'city' => 'Mumbai', 'pincode' => '400013', 'email' => 'billing@aicountly.test', 'signatory_name' => 'Old Signatory', 'signatory_designation' => 'Director',
         'effective_from' => '2026-04-01'];
     same(403, api('PUT', 'v1/invoicing/seller-profile', $T['carol'], $profile, [], $iapi)['status'], 'approver cannot');
@@ -569,7 +569,7 @@ test('Manage read API: signed, per company, cursor-paged; another company\'s doc
     same([200, "AIC/{$YY}/000002", 'tax_invoice', '27', 'Maharashtra', '997331', 'Rupees Eleven Thousand Eight Hundred Only', 'HDFCN52026101800101', null, null],
         [$d['status'], $doc['doc_no'], $doc['doc_type'], $doc['place_of_supply']['code'], $doc['place_of_supply']['name'], $doc['lines'][0]['sac'], $doc['amount_in_words'],
             $doc['payment']['reference'], $doc['irn'], $doc['original_invoice']], 'document face');
-    same([pdfRow('invoice_id', $ids['INV1'])['pdf_sha256'], 'Aicountly Interactive Services Pvt Ltd', 'AAJCA4321K', 'Acme Traders Pvt Ltd'],
+    same([pdfRow('invoice_id', $ids['INV1'])['pdf_sha256'], 'Aicountly Interactive Services Private Limited', 'AAJCA4321K', 'Acme Traders Pvt Ltd'],
         [$doc['pdf_sha256'], $doc['seller']['legal_name'], $doc['seller']['pan'], $doc['buyer']['legal_name']], 'seller, buyer, pdf_sha256');
     foreach (['id', 'source', 'issued_by', 'credit_notes', 'remaining_paise'] as $k) {
         check(!array_key_exists($k, $doc), "no internal field {$k}");

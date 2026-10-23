@@ -52,8 +52,12 @@ const ENGAGE_OUT_KEY = 'finance-to-engage-callback-key-0123456789abcdef';
 
 test('migrations: applied once, re-run is a no-op, an edited migration is refused', function () use ($pdo, $cacheDir): void {
     $m = new Migrator($pdo, __DIR__ . '/../database/migrations');
-    same(['001_payouts', '002_company_bank_accounts', '003_invoicing', '005_academy_fees'], $m->migrate(), 'first run applies 001, 002, 003 and 005');
+    same(['001_payouts', '002_company_bank_accounts', '003_invoicing', '005_academy_fees', '006_brand_aicountly'], $m->migrate(), 'first run applies 001, 002, 003, 005 and 006');
     same([], $m->migrate(), 'second run applies nothing');
+    check(str_starts_with((string) $pdo->query("SELECT obj_description('fin_invoices'::regclass, 'pg_class')")->fetchColumn(), 'GST tax invoices for Aicountly subscriptions'),
+        '006 writes the brand as Aicountly in the table comment');
+    $pdo->exec((string) file_get_contents(__DIR__ . '/../database/migrations/006_brand_aicountly.sql'));
+    check(true, '006 is idempotent (re-running its SQL is harmless)');
     same([], $m->pending(), 'nothing pending');
 
     $dir = $cacheDir . '/migrations-edited';

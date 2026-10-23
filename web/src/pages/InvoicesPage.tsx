@@ -54,7 +54,7 @@ export function InvoicesPage() {
     <>
       <PageHeader
         title="Invoices"
-        subtitle="GST tax invoices and credit notes for AICOUNTLY subscriptions. Issued only for payments Finance has verified; never edited — corrections are credit notes."
+        subtitle="GST tax invoices and credit notes for Aicountly subscriptions. Issued only for payments Finance has verified; never edited — corrections are credit notes."
         actions={
           <>
             <Link className="button button-outline" to="/offline-payments">

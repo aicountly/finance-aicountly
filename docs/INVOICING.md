@@ -1,6 +1,6 @@
 # Subscription invoicing (commerce plan, Phase A)
 
-Finance issues every GST tax invoice and credit note for AICOUNTLY subscriptions, and Manage
+Finance issues every GST tax invoice and credit note for Aicountly subscriptions, and Manage
 (manage.aicountly.com) shows them to the customer by reading them from Finance server to server.
 Customers never sign in to Finance: the staff screens use Console SSO and Finance roles like the rest of
 Finance, and the only routes Manage can call are signed AIC-S2S v1 reads.

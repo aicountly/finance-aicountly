@@ -6,7 +6,7 @@ Its first module is **weekly seller payouts**: Engage sends each week's payout
 run as a draft; Finance staff review it, approve it (four-eyes), produce the bank
 bulk-upload file, and record the bank's UTRs. Finance never moves money itself.
 The second is **subscription invoicing** (dormant until configured): GST tax
-invoices and credit notes for AICOUNTLY subscriptions, read by Manage server to
+invoices and credit notes for Aicountly subscriptions, read by Manage server to
 server — see [docs/INVOICING.md](docs/INVOICING.md).
 The third is **Aicountly Academy fees** (dormant until configured): payment links for
 Aicountly Edge / Aicountly Aspire fees on Aicountly's own Razorpay / Cashfree accounts,

@@ -4,7 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/../Helpers/ResponseHelper.php';
 
 /**
- * Server-to-server authentication for inbound calls from other AICOUNTLY
+ * Server-to-server authentication for inbound calls from other Aicountly
  * services (contract: tokens ≥ 32 characters, compared with hash_equals,
  * 503 when unset on this side, 401 when missing or wrong).
  *
