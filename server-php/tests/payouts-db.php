@@ -52,7 +52,7 @@ const ENGAGE_OUT_KEY = 'finance-to-engage-callback-key-0123456789abcdef';
 
 test('migrations: applied once, re-run is a no-op, an edited migration is refused', function () use ($pdo, $cacheDir): void {
     $m = new Migrator($pdo, __DIR__ . '/../database/migrations');
-    same(['001_payouts', '002_company_bank_accounts', '003_invoicing'], $m->migrate(), 'first run applies 001, 002 and 003');
+    same(['001_payouts', '002_company_bank_accounts', '003_invoicing', '005_academy_fees'], $m->migrate(), 'first run applies 001, 002, 003 and 005');
     same([], $m->migrate(), 'second run applies nothing');
     same([], $m->pending(), 'nothing pending');
 

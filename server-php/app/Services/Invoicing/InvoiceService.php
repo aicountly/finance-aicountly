@@ -7,6 +7,7 @@ use App\Services\AuditLog;
 use App\Support\AmountInWords;
 use App\Support\ApiException;
 use App\Support\FiscalYear;
+use App\Support\Gstin;
 use App\Support\Ulid;
 
 /**
@@ -29,6 +30,16 @@ final class InvoiceService
 
     /** Configuration problems: the payment waits (blocked_config) and is retried. */
     public const CONFIG_CODES = ['seller_not_configured', 'series_not_configured', 'series_exhausted'];
+
+    /** Buyer kinds (fin_invoices.buyer_kind): a Manage company (cmp_id), or an Aicountly Academy student (no cmp_id, no GSTIN). */
+    public const BUYER_COMPANY = 'company';
+    public const BUYER_ACADEMY_STUDENT = 'academy_student';
+
+    /**
+     * CGST Rule 46(e): an invoice to an unregistered recipient whose taxable value is ₹50,000 or more carries the
+     * recipient's name and address (and the state). Below it an Academy student's address is optional (Rule 46(f)).
+     */
+    public const UNREGISTERED_ADDRESS_THRESHOLD_PAISE = 5_000_000;
 
     private AuditLog $audit;
     private DocumentQueries $queries;
@@ -132,10 +143,12 @@ final class InvoiceService
                 $out = $existing;
             } else {
                 try {
+                    $kind = (string) ($snap['buyer_kind'] ?? self::BUYER_COMPANY);
                     $out = $this->issueInTransaction([
                         'source'       => 'payment',
                         'source_id'    => $paymentId,
-                        'cmp_id'       => (int) ($snap['cmp_id'] ?? 0),
+                        'buyer_kind'   => $kind,
+                        'cmp_id'       => $kind === self::BUYER_ACADEMY_STUDENT ? null : (int) ($snap['cmp_id'] ?? 0),
                         'buyer_uuid'   => $snap['buyer_uuid'] ?? null,
                         'buyer'        => (array) ($snap['buyer'] ?? []),
                         'lines'        => $snap['lines'] ?? [],
@@ -204,8 +217,11 @@ final class InvoiceService
     /**
      * Create the invoice for one verified payment. Must run inside a transaction.
      *
-     * @param array{source:string, source_id:int, cmp_id:int, buyer_uuid:?string, buyer:array<string,mixed>, lines:mixed, amount_paise:int,
-     *              payment:array{method:string, gateway:?string, reference:string, paid_on:string}} $order
+     * buyer_kind (default company): a company needs its Manage cmp_id; an academy_student has none (null), no GSTIN, only
+     * comes from a gateway payment, and needs an address only from the Rule 46(e) value up.
+     *
+     * @param array{source:string, source_id:int, buyer_kind?:string, cmp_id:?int, buyer_uuid:?string, buyer:array<string,mixed>, lines:mixed,
+     *              amount_paise:int, payment:array{method:string, gateway:?string, reference:string, paid_on:string}} $order
      * @param array{actor:string, name?:?string, ip?:?string} $actor
      * @return array{id:int, document_id:string, doc_no:string, created:bool}
      */
@@ -219,11 +235,25 @@ final class InvoiceService
             return $existing;
         }
 
-        $errors = [];
-        if ($order['cmp_id'] <= 0) {
+        $errors  = [];
+        $kind    = $order['buyer_kind'] ?? self::BUYER_COMPANY;
+        $student = $kind === self::BUYER_ACADEMY_STUDENT;
+        if (!in_array($kind, [self::BUYER_COMPANY, self::BUYER_ACADEMY_STUDENT], true)) {
+            $errors['buyer_kind'] = 'company or academy_student.';
+        } elseif ($student) {
+            if ($order['cmp_id'] !== null) {
+                $errors['cmp_id'] = 'An Aicountly Academy student has no Manage company id.';
+            }
+            if ($order['source'] !== 'payment') {
+                $errors['source'] = 'Academy students are invoiced only for gateway payments.';
+            }
+        } elseif ((int) $order['cmp_id'] <= 0) {
             $errors['cmp_id'] = 'The Manage company id is required.';
         }
-        $buyer = InvoiceInput::buyer($order['buyer'], $errors);
+        $buyer = InvoiceInput::buyer($order['buyer'], $errors, 'buyer.', !$student);
+        if ($student && $buyer['gstin'] !== null) {
+            $errors['buyer.gstin'] = 'An Academy student is invoiced as an unregistered individual (no GSTIN).';
+        }
         $lines = InvoiceInput::lines($order['lines'], $errors);
         if ($order['payment']['reference'] === '' || !FiscalYear::isDate($order['payment']['paid_on'])) {
             $errors['payment'] = 'The payment reference and date are required.';
@@ -234,6 +264,15 @@ final class InvoiceService
         $pos    = GstCalculator::placeOfSupply($buyer['gstin'], $buyer['state_code']);
         $calc   = InvoiceInput::compute($lines, (string) $seller['state_code'], $pos);
         $total  = $calc['totals']['total'];
+        if ($student) {
+            if ($calc['totals']['taxable'] >= self::UNREGISTERED_ADDRESS_THRESHOLD_PAISE && ($buyer['address'] === '' || $buyer['pincode'] === '')) {
+                InvoiceInput::throwIf(['buyer.address' => 'The student\'s address and PIN are required from a taxable value of ₹50,000 (CGST Rule 46(e)).'],
+                    'The order cannot be invoiced: some fields are invalid.');
+            }
+            if ($buyer['address'] === '') {
+                $buyer['address'] = Gstin::stateName($buyer['state_code']) . ', India';
+            }
+        }
         if ($total !== $order['amount_paise']) {
             throw ApiException::coded(422, 'amount_mismatch', 'The amount paid does not equal the invoice total.',
                 ['expected_paise' => $total, 'paid_paise' => $order['amount_paise']]);
@@ -243,17 +282,17 @@ final class InvoiceService
         $num   = (new DocumentNumbering($this->pdo))->next(FiscalYear::forDate($today), 'tax_invoice');
 
         $stmt = $this->pdo->prepare(
-            'INSERT INTO fin_invoices (document_id, cmp_id, buyer_uuid, series_id, fy, seq_no, doc_no, doc_date, source, source_ref, payment_id, offline_payment_id,
-                 seller_profile_id, seller, seller_gstin, seller_state_code, buyer_legal_name, buyer_gstin, buyer_state_code, buyer_address, buyer_pincode,
-                 buyer_country, buyer_email, place_of_supply, supply_type, taxable_paise, cgst_paise, sgst_paise, igst_paise, total_paise, amount_in_words,
-                 payment_method, payment_gateway, payment_reference, paid_on, issued_by)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id',
+            'INSERT INTO fin_invoices (document_id, buyer_kind, cmp_id, buyer_uuid, series_id, fy, seq_no, doc_no, doc_date, source, source_ref, payment_id,
+                 offline_payment_id, seller_profile_id, seller, seller_gstin, seller_state_code, buyer_legal_name, buyer_gstin, buyer_state_code, buyer_address,
+                 buyer_pincode, buyer_country, buyer_email, place_of_supply, supply_type, taxable_paise, cgst_paise, sgst_paise, igst_paise, total_paise,
+                 amount_in_words, payment_method, payment_gateway, payment_reference, paid_on, issued_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id',
         );
         $stmt->execute([
-            'fin_inv_' . Ulid::generate(), $order['cmp_id'], $order['buyer_uuid'], $num['series_id'], $num['fy'], $num['seq_no'], $num['doc_no'], $today,
+            'fin_inv_' . Ulid::generate(), $kind, $student ? null : (int) $order['cmp_id'], $order['buyer_uuid'], $num['series_id'], $num['fy'], $num['seq_no'], $num['doc_no'], $today,
             $order['source'], $ref, $order['source'] === 'payment' ? $order['source_id'] : null, $order['source'] === 'offline_payment' ? $order['source_id'] : null,
             (int) $seller['id'], json_encode(self::sellerSnapshot($seller), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
-            $seller['gstin'], $seller['state_code'], $buyer['legal_name'], $buyer['gstin'], $buyer['state_code'], $buyer['address'], $buyer['pincode'],
+            $seller['gstin'], $seller['state_code'], $buyer['legal_name'], $buyer['gstin'], $buyer['state_code'], $buyer['address'], $buyer['pincode'] ?: null,
             $buyer['country'], $buyer['email'], $pos, GstCalculator::supplyType((string) $seller['state_code'], $pos),
             $calc['totals']['taxable'], $calc['totals']['cgst'], $calc['totals']['sgst'], $calc['totals']['igst'], $total, AmountInWords::inr($total),
             $order['payment']['method'], $order['payment']['gateway'] ?: null, $order['payment']['reference'], $order['payment']['paid_on'], $actor['actor'],
@@ -274,7 +313,7 @@ final class InvoiceService
         $this->storeHtml('invoice_id', $id, DocumentHtml::render($doc));
         $this->audit->record($actor, 'invoice.issued', 'invoice', $id, null, [
             'document_id' => $doc['document_id'], 'doc_no' => $doc['doc_no'], 'doc_date' => $doc['doc_date'], 'cmp_id' => $doc['cmp_id'],
-            'source_ref' => $ref, 'total_paise' => $total, 'place_of_supply' => $pos, 'supply_type' => $doc['supply_type'],
+            'buyer_kind' => $kind, 'source_ref' => $ref, 'total_paise' => $total, 'place_of_supply' => $pos, 'supply_type' => $doc['supply_type'],
         ]);
 
         return ['id' => $id, 'document_id' => $doc['document_id'], 'doc_no' => (string) $doc['doc_no'], 'created' => true];

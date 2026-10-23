@@ -16,6 +16,7 @@ declare(strict_types=1);
  *
  * 's2s' marks a signed server-to-server route (AIC-S2S v1, Filters/S2sFilter.php): never a user session,
  * never CORS; ['scope' => read|issue, 'clients' => [...], 'cost' => rate-limit units].
+ * 'webhook' marks a payment-gateway webhook: no session and no CORS; the controller verifies the provider's signature.
  */
 $view     = ['auth' => true, 'gate' => 'view'];
 $edit     = ['auth' => true, 'gate' => 'edit'];
@@ -30,6 +31,22 @@ $manageRead = static fn (string $method, int $cost = 1): array => [
     'method'     => $method,
     'auth'       => false,
     's2s'        => ['scope' => 'read', 'clients' => ['manage'], 'cost' => $cost],
+];
+
+// Engage → Finance: Aicountly Academy fee payment links (docs/ACADEMY_PAYMENTS.md). Signed, issue keys only.
+$engageLinks = static fn (string $method): array => [
+    'controller' => 'Inbound\\EngagePaymentLinksController',
+    'method'     => $method,
+    'auth'       => false,
+    's2s'        => ['scope' => 'issue', 'clients' => ['engage'], 'cost' => 1],
+];
+
+// Payment-gateway webhooks: no session, no CORS; the provider's signature over the raw body is the authentication.
+$webhook = static fn (string $method): array => [
+    'controller' => 'Webhooks\\GatewayWebhookController',
+    'method'     => $method,
+    'auth'       => false,
+    'webhook'    => true,
 ];
 
 return [
@@ -76,6 +93,17 @@ return [
         'v1/offline-payments/{id}'   => $r('Invoicing\\OfflinePaymentController', 'show', $view),
         'v1/invoicing/settings'      => $r('Invoicing\\InvoicingSettingsController', 'show', $view),
 
+        // Aicountly Academy fees (docs/ACADEMY_PAYMENTS.md).
+        'v1/academy/overview'                => $r('AcademyFees\\AcademyFeesController', 'overview', $view),
+        'v1/academy/payment-links'           => $r('AcademyFees\\PaymentLinkController', 'index', $view),
+        'v1/academy/payment-links/{id}'      => $r('AcademyFees\\PaymentLinkController', 'show', $view),
+        'v1/academy/payments'                => $r('AcademyFees\\AcademyFeesController', 'payments', $view),
+        'v1/academy/webhook-events'          => $r('AcademyFees\\AcademyFeesController', 'webhookEvents', $view),
+        'v1/academy/engage-events'           => $r('AcademyFees\\AcademyFeesController', 'engageEvents', $view),
+        'v1/gateway-connections'             => $r('Admin\\GatewayConnectionController', 'index', $settings),
+
+        'v1/inbound/engage/payment-links/{link_id}'       => $engageLinks('show'),
+
         'v1/inbound/manage/documents'                     => $manageRead('index'),
         'v1/inbound/manage/documents/{document_id}'       => $manageRead('show'),
         'v1/inbound/manage/documents/{document_id}/pdf'   => $manageRead('pdf', 5),
@@ -94,6 +122,30 @@ return [
             'auth'       => false,
             'inbound'    => 'engage',
         ],
+
+        'v1/inbound/engage/payment-links'                 => $engageLinks('create'),
+        'v1/inbound/engage/payment-links/{link_id}/cancel' => $engageLinks('cancel'),
+
+        'v1/webhooks/razorpay' => $webhook('razorpay'),
+        'v1/webhooks/cashfree' => $webhook('cashfree'),
+
+        // Academy fees: a maker raises a link (edit), someone else approves it (approve); finance_admin re-queues dead events.
+        'v1/academy/payment-links/preview'        => $r('AcademyFees\\PaymentLinkController', 'preview', $edit),
+        'v1/academy/payment-links'                => $r('AcademyFees\\PaymentLinkController', 'create', $edit),
+        'v1/academy/payment-links/{id}/approve'   => $r('AcademyFees\\PaymentLinkController', 'approve', $approve),
+        'v1/academy/payment-links/{id}/reject'    => $r('AcademyFees\\PaymentLinkController', 'reject', $approve),
+        'v1/academy/payment-links/{id}/cancel'    => $r('AcademyFees\\PaymentLinkController', 'cancel', $approve),
+        'v1/academy/payment-links/{id}/retry'     => $r('AcademyFees\\PaymentLinkController', 'retry', $approve),
+        'v1/academy/payment-links/{id}/refresh'   => $r('AcademyFees\\PaymentLinkController', 'refresh', $edit),
+        'v1/academy/payments/{id}/retry-invoice'  => $r('AcademyFees\\AcademyFeesController', 'retryInvoice', $approve),
+        'v1/academy/engage-events/{id}/requeue'   => $r('AcademyFees\\AcademyFeesController', 'requeueEngageEvent', $settings),
+
+        // Settings → Payment gateways (finance_admin).
+        'v1/gateway-connections'               => $r('Admin\\GatewayConnectionController', 'create', $settings),
+        'v1/gateway-connections/{id}/test'     => $r('Admin\\GatewayConnectionController', 'test', $settings),
+        'v1/gateway-connections/{id}/enable'   => $r('Admin\\GatewayConnectionController', 'enable', $settings),
+        'v1/gateway-connections/{id}/disable'  => $r('Admin\\GatewayConnectionController', 'disable', $settings),
+        'v1/gateway-connections/{id}/default'  => $r('Admin\\GatewayConnectionController', 'makeDefault', $settings),
 
         'v1/payout-batches/{id}/submit'        => $r('Payouts\\PayoutBatchController', 'submit', $edit),
         'v1/payout-batches/{id}/return'        => $r('Payouts\\PayoutBatchController', 'returnToDraft', $edit),
@@ -136,5 +188,7 @@ return [
 
         'v1/invoicing/seller-profile' => $r('Invoicing\\InvoicingSettingsController', 'saveProfile', $settings),
         'v1/invoicing/series/{id}'    => $r('Invoicing\\InvoicingSettingsController', 'updateSeries', $settings),
+
+        'v1/gateway-connections/{id}' => $r('Admin\\GatewayConnectionController', 'update', $settings),
     ],
 ];

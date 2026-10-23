@@ -20,11 +20,14 @@ final class InvoiceInput
     public const MAX_LINES = 50;
 
     /**
+     * $requireAddress false (an Aicountly Academy student below the Rule 46(e) value, see InvoiceService) makes the
+     * billing address and PIN optional: an empty address comes back as '' and an empty PIN as ''.
+     *
      * @param array<string,mixed> $buyer
      * @param array<string,string> $errors collected problems (by reference)
      * @return array{legal_name:string, gstin:?string, state_code:string, address:string, pincode:string, country:string, email:?string}
      */
-    public static function buyer(array $buyer, array &$errors, string $prefix = 'buyer.'): array
+    public static function buyer(array $buyer, array &$errors, string $prefix = 'buyer.', bool $requireAddress = true): array
     {
         $name = self::text($buyer['legal_name'] ?? null, 200);
         if ($name === '') {
@@ -44,11 +47,11 @@ final class InvoiceInput
             $errors[$prefix . 'state_code'] = 'Must be the GSTIN\'s state (' . Gstin::stateLabel(Gstin::stateOf($gstin)) . '): the place of supply follows the GSTIN.';
         }
         $address = self::text($buyer['address'] ?? null, 500, true);
-        if ($address === '') {
+        if ($address === '' && $requireAddress) {
             $errors[$prefix . 'address'] = 'The billing address is required.';
         }
         $pincode = trim(is_scalar($buyer['pincode'] ?? null) ? (string) $buyer['pincode'] : '');
-        if (!preg_match('/^[1-9][0-9]{5}$/', $pincode)) {
+        if (($pincode !== '' || $requireAddress) && !preg_match('/^[1-9][0-9]{5}$/', $pincode)) {
             $errors[$prefix . 'pincode'] = 'A six-digit PIN code.';
         }
         $country = strtoupper(trim(is_string($buyer['country'] ?? null) ? $buyer['country'] : 'IN')) ?: 'IN';

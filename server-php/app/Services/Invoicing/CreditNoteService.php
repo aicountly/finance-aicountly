@@ -73,12 +73,14 @@ final class CreditNoteService
             $totals    = GstCalculator::totals($lines);
 
             $stmt = $this->pdo->prepare(
-                'INSERT INTO fin_credit_notes (document_id, invoice_id, cmp_id, kind, reason, buyer_legal_name, buyer_gstin, buyer_state_code, buyer_address,
+                'INSERT INTO fin_credit_notes (document_id, invoice_id, buyer_kind, cmp_id, kind, reason, buyer_legal_name, buyer_gstin, buyer_state_code, buyer_address,
                      buyer_pincode, buyer_country, buyer_email, place_of_supply, supply_type, taxable_paise, cgst_paise, sgst_paise, igst_paise, total_paise,
                      amount_in_words, requested_by)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id',
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id',
             );
-            $stmt->execute(['fin_cn_' . Ulid::generate(), $invoiceId, (int) $inv['cmp_id'], $kind, $reason, $inv['buyer_legal_name'], $inv['buyer_gstin'],
+            // The note follows its invoice's buyer: a company (cmp_id) or an Aicountly Academy student (no cmp_id).
+            $stmt->execute(['fin_cn_' . Ulid::generate(), $invoiceId, (string) ($inv['buyer_kind'] ?? 'company'),
+                $inv['cmp_id'] === null ? null : (int) $inv['cmp_id'], $kind, $reason, $inv['buyer_legal_name'], $inv['buyer_gstin'],
                 $inv['buyer_state_code'], $inv['buyer_address'], $inv['buyer_pincode'], $inv['buyer_country'], $inv['buyer_email'], $inv['place_of_supply'],
                 $inv['supply_type'], $totals['taxable'], $totals['cgst'], $totals['sgst'], $totals['igst'], $totals['total'], AmountInWords::inr($totals['total']),
                 $actor['actor']]);

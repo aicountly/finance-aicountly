@@ -7,7 +7,7 @@ namespace App\Security;
  * AIC-S2S v1 — the signed server-to-server scheme shared by Finance, Engage and Manage (commerce contract §0.1).
  * Pure: no I/O. Secrets, scopes, nonce replay and rate limits are supplied by the caller (Filters/S2sFilter.php).
  *
- *   X-AIC-Client       manage | engage                   (selects the secret)
+ *   X-AIC-Client       manage | engage (inbound) · finance (Finance calling Engage)   (selects the secret)
  *   X-AIC-Key-Id       e.g. manage-read-2026-10           (rotation: two ids may be live at once)
  *   X-AIC-Timestamp    unix seconds                      (refused if |now − ts| > 300)
  *   X-AIC-Nonce        uuid v4                           (refused if seen in the last 600 s for this key id)
@@ -83,6 +83,20 @@ final class AicS2s
             'X-AIC-Actor'       => $actor,
             'X-AIC-Request-Id'  => $requestId ?? self::uuid4(),
         ];
+    }
+
+    /**
+     * This Finance's own AIC-S2S environment (what callers must send, and what Finance sends when it calls out):
+     * FINANCE_S2S_ENVIRONMENT, else production when APP_ENV=production, else local.
+     */
+    public static function localEnvironment(): string
+    {
+        $env = strtolower(finance_env('FINANCE_S2S_ENVIRONMENT'));
+        if (in_array($env, self::ENVIRONMENTS, true)) {
+            return $env;
+        }
+
+        return finance_env('APP_ENV') === 'production' ? 'production' : 'local';
     }
 
     public static function envSuffix(string $keyId): string

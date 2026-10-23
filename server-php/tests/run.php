@@ -23,6 +23,10 @@ declare(strict_types=1);
  *    amount in words, AIC-S2S v1, numbering (two worker processes, tests/invoicing-worker.php), offline payments
  *    and credit notes with four-eyes, immutability triggers, the Manage read API and a stub Gotenberg
  *    (tests/fake-gotenberg.php).
+ * 5. Aicountly Academy fees (academy-unit.php without I/O: Razorpay / Cashfree adapters against fixtures, webhook
+ *    signatures with openssl known-answer vectors, GST split checks, the Engage event body; academy-db.php against the
+ *    same database: gateway connections, Engage AIC-S2S link API, webhooks with replay safety, verification by re-read,
+ *    B2C invoices, the Engage outbox, staff four-eyes — with a stub Razorpay / Cashfree (tests/fake-gateway.php)).
  *
  * Exits non-zero on the first failing assertion.
  */
@@ -131,6 +135,7 @@ test('user-access revocations', function (): void {
 
 require __DIR__ . '/payouts-unit.php';
 require __DIR__ . '/invoicing-unit.php';
+require __DIR__ . '/academy-unit.php';
 
 $cacheDir = sys_get_temp_dir() . '/finance-tests-' . bin2hex(random_bytes(4));
 $_ENV['FINANCE_AUTHZ_CACHE_DIR'] = $cacheDir . '/unit';
@@ -476,5 +481,6 @@ test('GET /api/health reports Console role sync (booleans only)', function () us
 
 require __DIR__ . '/payouts-db.php';
 require __DIR__ . '/invoicing-db.php';
+require __DIR__ . '/academy-db.php';
 
 echo "\n{$passed} assertions passed.\n";

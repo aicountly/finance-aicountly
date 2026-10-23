@@ -233,7 +233,8 @@ final class DocumentQueries
             'doc_no'          => $r['doc_no'],
             'doc_date'        => $r['doc_date'],
             'fy'              => $r['fy'],
-            'cmp_id'          => (int) $r['cmp_id'],
+            'cmp_id'          => $r['cmp_id'] === null ? null : (int) $r['cmp_id'],
+            'buyer_kind'      => (string) ($r['buyer_kind'] ?? 'company'),
             'seller'          => $seller,
             'buyer'           => [
                 'legal_name' => (string) $r['buyer_legal_name'],
@@ -395,7 +396,7 @@ final class DocumentQueries
      */
     public static function forManage(array $doc): array
     {
-        unset($doc['id'], $doc['source'], $doc['issued_by'], $doc['credit_notes'], $doc['remaining_paise'], $doc['requested_by'], $doc['requested_at'],
+        unset($doc['id'], $doc['buyer_kind'], $doc['source'], $doc['issued_by'], $doc['credit_notes'], $doc['remaining_paise'], $doc['requested_by'], $doc['requested_at'],
             $doc['approved_by'], $doc['approved_at'], $doc['rejected_by'], $doc['reject_reason'], $doc['credit_deadline']);
         if (is_array($doc['original_invoice'] ?? null)) {
             unset($doc['original_invoice']['id']);
@@ -412,7 +413,7 @@ final class DocumentQueries
     // ------------------------------------------------------------------ staff register + CSV
 
     /**
-     * @param array{fy?:?string, doc_type?:?string, status?:?string, cmp_id?:?int, q?:?string} $f
+     * @param array{fy?:?string, doc_type?:?string, status?:?string, cmp_id?:?int, buyer_kind?:?string, q?:?string} $f
      * @return array{rows:list<array<string,mixed>>, total:int, page:int, per_page:int, totals:array<string,int>}
      */
     public function register(array $f, int $page = 1, int $perPage = 50): array
@@ -434,7 +435,8 @@ final class DocumentQueries
             'doc_no'           => $r['doc_no'],
             'doc_date'         => $r['doc_date'],
             'fy'               => $r['fy'],
-            'cmp_id'           => (int) $r['cmp_id'],
+            'cmp_id'           => $r['cmp_id'] === null ? null : (int) $r['cmp_id'],
+            'buyer_kind'       => (string) ($r['buyer_kind'] ?? 'company'),
             'buyer_legal_name' => (string) $r['buyer_legal_name'],
             'buyer_gstin'      => $r['buyer_gstin'],
             'place_of_supply'  => (string) $r['place_of_supply'],
@@ -450,12 +452,12 @@ final class DocumentQueries
     }
 
     /**
-     * @param array{fy?:?string, doc_type?:?string, status?:?string, cmp_id?:?int, q?:?string} $f
+     * @param array{fy?:?string, doc_type?:?string, status?:?string, cmp_id?:?int, buyer_kind?:?string, q?:?string} $f
      * @return array{0:string, 1:list<mixed>}
      */
     private function registerQuery(array $f): array
     {
-        $cols = 'id, document_id, doc_no, doc_date, fy, cmp_id, buyer_legal_name, buyer_gstin, place_of_supply, supply_type, taxable_paise, cgst_paise, sgst_paise, igst_paise, total_paise, status';
+        $cols = 'id, document_id, doc_no, doc_date, fy, cmp_id, buyer_kind, buyer_legal_name, buyer_gstin, place_of_supply, supply_type, taxable_paise, cgst_paise, sgst_paise, igst_paise, total_paise, status';
         $params = [];
         $parts  = [];
         $docType = $f['doc_type'] ?? null;
@@ -469,6 +471,10 @@ final class DocumentQueries
             if (!empty($f['cmp_id'])) {
                 $w .= " AND {$alias}.cmp_id = ?";
                 $params[] = (int) $f['cmp_id'];
+            }
+            if (!empty($f['buyer_kind'])) {
+                $w .= " AND {$alias}.buyer_kind = ?";
+                $params[] = (string) $f['buyer_kind'];
             }
             if (!empty($f['q'])) {
                 $w .= " AND ({$alias}.doc_no ILIKE ? OR {$alias}.buyer_legal_name ILIKE ? OR {$alias}.buyer_gstin ILIKE ?)";
@@ -511,7 +517,7 @@ final class DocumentQueries
      * is reported as B2CS and reduces that table). Values are positive rupees; the Document type says which are
      * credit notes. Confirm the mapping with your CA before filing.
      *
-     * @param array{fy?:?string, doc_type?:?string, status?:?string, cmp_id?:?int, q?:?string} $f
+     * @param array{fy?:?string, doc_type?:?string, status?:?string, cmp_id?:?int, buyer_kind?:?string, q?:?string} $f
      */
     public function gstr1Csv(array $f): string
     {
