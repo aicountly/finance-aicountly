@@ -44,7 +44,17 @@ final class DocumentHtml
             $meta[] = ['Against invoice', $doc['original_invoice']['doc_no'] . ' dated ' . self::dmy($doc['original_invoice']['doc_date'])];
         }
 
-        $head = '<tr><th class="c">#</th><th>Description</th><th class="c">SAC</th><th class="r">Qty</th><th class="r">Taxable value</th>'
+        // Discounted lines (004): List price and Discount (code) columns appear only on an invoice that has a discount;
+        // a document without one renders exactly as before. A credit note names the original discount under the line.
+        $hasDiscount = false;
+        foreach ((array) $doc['lines'] as $l) {
+            if ((int) ($l['discount_paise'] ?? 0) > 0) {
+                $hasDiscount = true;
+            }
+        }
+        $discountCols = $hasDiscount && !$isCn;
+        $head = '<tr><th class="c">#</th><th>Description</th><th class="c">SAC</th><th class="r">Qty</th>'
+            . ($discountCols ? '<th class="r">List price</th><th class="r">Discount</th>' : '') . '<th class="r">Taxable value</th>'
             . ($intra ? '<th class="r">CGST</th><th class="r">SGST</th>' : '<th class="r">IGST</th>')
             . '<th class="r">Total</th></tr>';
         $rows = '';
@@ -54,12 +64,25 @@ final class DocumentHtml
                 $period = '<div class="sub">Period: ' . $e(self::dmy($l['period_start'] ?? null)) . ' to ' . $e(self::dmy($l['period_end'] ?? null)) . '</div>';
             }
             $code = !empty($l['item_code']) ? '<div class="sub">' . $e($l['item_code']) . '</div>' : '';
+            $lineDiscount = (int) ($l['discount_paise'] ?? 0);
+            if ($isCn && $lineDiscount > 0) {
+                $code .= '<div class="sub">Original invoice line: list ' . $e(self::inr((int) $l['list_amount_paise'])) . ' less discount '
+                    . $e(self::inr($lineDiscount)) . ' (' . $e($l['discount_ref'] ?? '') . '); credited on the discounted value</div>';
+            }
+            $discountTds = '';
+            if ($discountCols) {
+                $inclusive = ($l['price_basis'] ?? null) === 'inclusive' ? '<div class="sub">incl. GST</div>' : '';
+                $discountTds = $lineDiscount > 0
+                    ? '<td class="r">' . $e(self::inr((int) $l['list_amount_paise'])) . $inclusive . '</td><td class="r">&minus;' . $e(self::inr($lineDiscount))
+                      . '<div class="sub">' . $e($l['discount_ref'] ?? '') . '</div></td>'
+                    : '<td class="r">' . $e(self::inr((int) ($l['amount_paise'] ?? $l['total_paise']))) . $inclusive . '</td><td class="r">&mdash;</td>';
+            }
             $tax  = $intra
                 ? '<td class="r">' . $e(self::inr((int) $l['cgst_paise'])) . '<div class="sub">@ ' . $e(self::rate($l['cgst_rate'])) . '</div></td>'
                   . '<td class="r">' . $e(self::inr((int) $l['sgst_paise'])) . '<div class="sub">@ ' . $e(self::rate($l['sgst_rate'])) . '</div></td>'
                 : '<td class="r">' . $e(self::inr((int) $l['igst_paise'])) . '<div class="sub">@ ' . $e(self::rate($l['igst_rate'])) . '</div></td>';
             $rows .= '<tr><td class="c">' . (int) $l['line_no'] . '</td><td>' . $e($l['description']) . $code . $period . '</td>'
-                . '<td class="c">' . $e($l['sac']) . '</td><td class="r">' . $e($l['quantity'] ?? '') . '</td>'
+                . '<td class="c">' . $e($l['sac']) . '</td><td class="r">' . $e($l['quantity'] ?? '') . '</td>' . $discountTds
                 . '<td class="r">' . $e(self::inr((int) $l['taxable_paise'])) . '</td>' . $tax
                 . '<td class="r">' . $e(self::inr((int) $l['total_paise'])) . '</td></tr>';
         }
@@ -116,6 +139,7 @@ final class DocumentHtml
             . ($buyer['email'] ? '<br>' . $e($buyer['email']) : '') . '</div></div>'
             . $reason
             . '<table class="lines"><thead>' . $head . '</thead><tbody>' . $rows . '</tbody></table>'
+            . ($discountCols ? '<p class="sub">Discounts are agreed before supply and shown on this invoice; the taxable value and GST are on the price after discount.</p>' : '')
             . '<div class="bottom"><div class="words"><strong>Amount in words:</strong><br>' . $e($doc['amount_in_words']) . '</div>'
             . '<table class="totals">' . $totals . '</table></div>'
             . $paid

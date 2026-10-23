@@ -57,6 +57,10 @@ export interface DocumentLine {
   igst_rate: string
   igst_paise: number
   total_paise: number
+  /** Discounted line (docs/INVOICING.md "Discounted lines"); null on an ordinary line. */
+  list_amount_paise?: number | null
+  discount_paise?: number | null
+  discount_ref?: string | null
   invoice_line_id: number | null
 }
 
@@ -197,6 +201,10 @@ export interface LineInput {
   period_end: string
   quantity: string
   amount: string
+  /** Optional discount agreed before supply: list price and discount (₹, on the line's price basis) and the coupon code / quote ref. */
+  list_amount?: string
+  discount?: string
+  discount_ref?: string
 }
 
 export interface OfflinePaymentInput {
@@ -215,7 +223,8 @@ export interface Preview {
   place_of_supply: string
   supply_type: 'intra_state' | 'inter_state'
   seller_state: string
-  lines: Array<{ description: string; taxable_paise: number; cgst_paise: number; sgst_paise: number; igst_paise: number; total_paise: number }>
+  lines: Array<{ description: string; taxable_paise: number; cgst_paise: number; sgst_paise: number; igst_paise: number; total_paise: number
+    amount_paise?: number; list_amount_paise?: number; discount_paise?: number; discount_ref?: string | null }>
   totals: { taxable_paise: number; cgst_paise: number; sgst_paise: number; igst_paise: number; total_paise: number }
 }
 
