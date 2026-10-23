@@ -1,13 +1,15 @@
 # Subscription invoicing (commerce plan, Phase A)
 
-Finance issues every GST tax invoice and credit note for AICOUNTLY subscriptions, and Manage
+Finance issues every GST tax invoice and credit note for Aicountly subscriptions, and Manage
 (manage.aicountly.com) shows them to the customer by reading them from Finance server to server.
 Customers never sign in to Finance: the staff screens use Console SSO and Finance roles like the rest of
 Finance, and the only routes Manage can call are signed AIC-S2S v1 reads.
 
 Phase A builds the read path and staff issuing. **Not built (Phase B):** checkout, payment gateways, the Pay
 integration, gateway-payment verification, refunds, and the licence order to Engage. The entry point a verified
-gateway payment will use (`InvoiceService::issueForPayment`) exists and is tested, but nothing calls it yet.
+gateway payment will use (`InvoiceService::issueForPayment`) exists and is tested; for subscriptions nothing calls it
+yet. Aicountly Academy fees (Razorpay / Cashfree payment links, B2C student invoices) use it — see
+[ACADEMY_PAYMENTS.md](ACADEMY_PAYMENTS.md).
 
 Contract: `commerce-contract-v1-draft.md` §0 (AIC-S2S conventions), §1 (Finance inbound API), §3 (what triggers
 issuance). Deviations are listed at the end.
@@ -321,13 +323,16 @@ the document type says which rows are credit notes.
 - Whether e-invoicing (IRN) applies (turnover > ₹5 cr): `irn` / `ack_no` are always null in Phase A.
 - State codes 25 (Daman & Diu) and 28 (undivided Andhra Pradesh) are not accepted for new documents.
 
-## Phase B hooks (built, not wired)
+## Phase B hooks
 
 - `InvoiceService::issueForPayment($paymentId, PaymentInvoiceSource $source)` issues the invoice for a gateway
   payment Finance has verified, idempotent on `payment_id`; `seller_not_configured` / `series_not_configured` are
   thrown after an ops alert so the caller can mark the payment `blocked_config`; bad order data → `422 blocked_data`.
-  Phase B implements `PaymentInvoiceSource` over `fin_payments` / `fin_checkout_orders` and adds the
-  `fin_invoices.payment_id` foreign key.
+  **Wired for Aicountly Academy fees** (migration `005_academy_fees`, [ACADEMY_PAYMENTS.md](ACADEMY_PAYMENTS.md)):
+  `App\Services\AcademyFees\GatewayPaymentInvoiceSource` reads `fin_gateway_payments`, and the buyer is an
+  `academy_student` (`fin_invoices.buyer_kind`; `cmp_id` NULL, no GSTIN — company rows keep `cmp_id` required). A
+  future SaaS checkout should record its gateway payments in the same `fin_gateway_payments` table; the
+  `fin_invoices.payment_id` foreign key is still not added (the test fixtures use synthetic payment ids).
 - Refund-driven credit notes will reuse `CreditNoteService`'s issue path.
 
 ## Deviations from the contract draft

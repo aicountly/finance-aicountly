@@ -150,7 +150,7 @@ test('numbering: format, width, 16-character limit, series validation', function
 
 test('seller profile validation: GSTIN, PAN inside it, state from it', function (): void {
     $gstin = testGstin('27', 'AAJCA4321K');
-    $v = SellerProfileService::validate(['legal_name' => 'Aicountly Interactive Services Pvt Ltd', 'gstin' => strtolower($gstin), 'address_line1' => '1 Test Street',
+    $v = SellerProfileService::validate(['legal_name' => 'Aicountly Interactive Services Private Limited', 'gstin' => strtolower($gstin), 'address_line1' => '1 Test Street',
         'city' => 'Mumbai', 'pincode' => '400001', 'signatory_name' => 'A Director', 'effective_from' => '2026-10-01']);
     same([$gstin, 'AAJCA4321K', '27'], [$v['gstin'], $v['pan'], $v['state_code']], 'PAN and state derived from the GSTIN');
     $e = throwsApi(422, static fn () => SellerProfileService::validate(['legal_name' => '', 'gstin' => $gstin, 'pan' => 'ZZZZZ9999Z', 'state_code' => '29',
@@ -360,16 +360,27 @@ test('printable document: discount columns only when a discount exists; old docu
     check(str_contains($cnHtml, 'Original invoice line: list ₹11,800.00 less discount ₹2,360.00 (DIWALI&lt;26&gt;); credited on the discounted value'), 'credit note names the discount');
 });
 
-test('routes: S2S routes are signed GET reads for Manage only; nothing else is reachable without a staff session', function (): void {
-    $routes = require __DIR__ . '/../app/Config/Routes.php';
-    $public = [];
+test('routes: S2S routes are Manage GET reads or Engage payment-link issues; webhooks are the only other routes without a staff session', function (): void {
+    $routes   = require __DIR__ . '/../app/Config/Routes.php';
+    $public   = [];
+    $webhooks = [];
     foreach ($routes as $method => $table) {
         foreach ($table as $path => $cfg) {
             if (!empty($cfg['s2s'])) {
                 same(false, !empty($cfg['auth']), "{$method} {$path}: S2S is never a user route");
-                same(['GET', 'read', ['manage']], [$method, $cfg['s2s']['scope'], $cfg['s2s']['clients']], "{$method} {$path}: Manage read key, GET only");
-                check(str_starts_with($path, 'v1/inbound/manage/'), "{$method} {$path}: under v1/inbound/manage/ (no CORS there)");
+                if (str_starts_with($path, 'v1/inbound/engage/payment-links')) {
+                    same(['issue', ['engage']], [$cfg['s2s']['scope'], $cfg['s2s']['clients']], "{$method} {$path}: Engage issue key only");
+                } else {
+                    same(['GET', 'read', ['manage']], [$method, $cfg['s2s']['scope'], $cfg['s2s']['clients']], "{$method} {$path}: Manage read key, GET only");
+                    check(str_starts_with($path, 'v1/inbound/manage/'), "{$method} {$path}: under v1/inbound/manage/ (no CORS there)");
+                }
                 check(\S2sFilter::isS2sPath('/api/' . $path), "{$method} {$path}: recognised as an S2S path");
+                continue;
+            }
+            if (!empty($cfg['webhook'])) {
+                same(false, !empty($cfg['auth']), "{$method} {$path}: a webhook is never a user route");
+                check(\S2sFilter::isS2sPath('/api/' . $path), "{$method} {$path}: no CORS for webhooks");
+                $webhooks[] = "{$method} {$path}";
                 continue;
             }
             if (empty($cfg['auth']) && empty($cfg['inbound'])) {
@@ -379,6 +390,7 @@ test('routes: S2S routes are signed GET reads for Manage only; nothing else is r
     }
     sort($public);
     same(['GET health', 'GET v1/auth/sso-callback', 'POST v1/auth/console-session'], $public, 'the only unauthenticated routes (Console staff sign-in + health)');
+    same(['POST v1/webhooks/razorpay', 'POST v1/webhooks/cashfree'], $webhooks, 'the only webhooks');
     same(5, $routes['GET']['v1/inbound/manage/documents/{document_id}/pdf']['s2s']['cost'], 'a PDF counts 5');
     foreach (['GET v1/invoices' => 'view', 'GET v1/invoices/export' => 'edit', 'GET v1/invoices/{id}/pdf' => 'view', 'POST v1/offline-payments' => 'edit',
               'POST v1/offline-payments/{id}/verify' => 'approve', 'POST v1/invoices/{id}/credit-notes' => 'edit', 'POST v1/credit-notes/{id}/approve' => 'approve',

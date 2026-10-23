@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { BankAccountsSection } from '../components/BankAccounts'
 import { InvoicingSettingsSection } from '../components/InvoicingSettings'
+import { GatewayConnectionsSection } from '../components/GatewayConnections'
 import { ErrorBanner, Notice, PageHeader, StatusBadge } from '../components/ui'
 import { useApiData } from '../hooks/useApiData'
 import { dateTime } from '../lib/format'
@@ -142,6 +143,7 @@ export function SettingsPage() {
       ) : null}
       <BankAccountsSection />
       <InvoicingSettingsSection />
+      <GatewayConnectionsSection />
       <EngageCallbacks />
     </>
   )

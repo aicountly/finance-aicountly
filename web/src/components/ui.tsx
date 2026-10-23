@@ -39,7 +39,7 @@ export function Tile({ label, value, sub, to }: { label: string; value: ReactNod
 export interface DialogField {
   name: string
   label: string
-  type?: 'text' | 'textarea' | 'date' | 'select'
+  type?: 'text' | 'textarea' | 'date' | 'select' | 'password'
   options?: Array<{ value: string; label: string }>
   required?: boolean
   placeholder?: string
@@ -118,6 +118,7 @@ export function FormDialog({
             ) : (
               <input
                 type={f.type ?? 'text'}
+                autoComplete={f.type === 'password' ? 'new-password' : undefined}
                 value={values[f.name]}
                 required={f.required}
                 placeholder={f.placeholder}

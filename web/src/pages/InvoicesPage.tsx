@@ -28,6 +28,7 @@ export function InvoicesPage() {
     doc_type: params.get('doc_type') ?? '',
     status: params.get('status') ?? '',
     cmp_id: params.get('cmp_id') ?? '',
+    buyer_kind: params.get('buyer_kind') ?? '',
     q: params.get('q') ?? '',
     page: Number(params.get('page') ?? '1') || 1,
   }
@@ -53,7 +54,7 @@ export function InvoicesPage() {
     <>
       <PageHeader
         title="Invoices"
-        subtitle="GST tax invoices and credit notes for AICOUNTLY subscriptions. Issued only for payments Finance has verified; never edited — corrections are credit notes."
+        subtitle="GST tax invoices and credit notes for Aicountly subscriptions. Issued only for payments Finance has verified; never edited — corrections are credit notes."
         actions={
           <>
             <Link className="button button-outline" to="/offline-payments">
@@ -96,6 +97,14 @@ export function InvoicesPage() {
             <option value="">Invoices and credit notes</option>
             <option value="tax_invoice">Tax invoices</option>
             <option value="credit_note">Credit notes</option>
+          </select>
+        </label>
+        <label className="field-inline">
+          <span>Buyer</span>
+          <select value={filters.buyer_kind} onChange={(e) => set({ buyer_kind: e.target.value })}>
+            <option value="">All buyers</option>
+            <option value="company">Companies (subscriptions)</option>
+            <option value="academy_student">Aicountly Academy students</option>
           </select>
         </label>
         <label className="field-inline">
@@ -161,7 +170,7 @@ export function InvoicesPage() {
                       <td>{r.buyer_legal_name}</td>
                       <td className="mono small">{r.buyer_gstin ?? 'B2C'}</td>
                       <td>{r.place_of_supply}</td>
-                      <td className="num">{r.cmp_id}</td>
+                      <td className="num">{r.buyer_kind === 'academy_student' ? 'Academy' : r.cmp_id}</td>
                       <td className="num">{inrPaise(r.taxable_paise)}</td>
                       <td className="num">{inrPaise(r.tax_paise)}</td>
                       <td className="num">{inrPaise(r.total_paise)}</td>

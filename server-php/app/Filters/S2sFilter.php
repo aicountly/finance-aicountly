@@ -8,7 +8,7 @@ use App\Security\AicS2s;
 
 /**
  * Inbound AIC-S2S v1 authentication (commerce contract §0.1, App\Security\AicS2s) for the server-to-server routes
- * Manage (and later Engage) call. These routes never accept a Finance staff JWT or a browser session, and get no
+ * Manage and Engage call. These routes never accept a Finance staff JWT or a browser session, and get no
  * CORS headers: they are not reachable from a browser.
  *
  * Route config (Config/Routes.php): 's2s' => ['scope' => 'read'|'issue', 'clients' => ['manage'], 'cost' => 1]
@@ -136,12 +136,7 @@ class S2sFilter
 
     public static function environment(): string
     {
-        $env = strtolower(finance_env('FINANCE_S2S_ENVIRONMENT'));
-        if (in_array($env, AicS2s::ENVIRONMENTS, true)) {
-            return $env;
-        }
-
-        return finance_env('APP_ENV') === 'production' ? 'production' : 'local';
+        return AicS2s::localEnvironment();
     }
 
     private static function limit(string $scope): int
@@ -151,12 +146,15 @@ class S2sFilter
         return ctype_digit($raw) && (int) $raw > 0 ? (int) $raw : ($scope === 'issue' ? 30 : 120);
     }
 
-    /** True for paths served only to signed S2S callers (no CORS, no staff session). */
+    /**
+     * True for paths served only to servers (no CORS, no staff session): the signed Manage and Engage payment-link routes,
+     * and the payment-gateway webhooks.
+     */
     public static function isS2sPath(string $requestUri): bool
     {
         $path = (string) parse_url($requestUri, PHP_URL_PATH);
 
-        return (bool) preg_match('#^(/api)?/v1/inbound/manage(/|$)#', $path);
+        return (bool) preg_match('#^(/api)?/v1/(inbound/manage|inbound/engage/payment-links|webhooks)(/|$)#', $path);
     }
 
     /** The signed path: the request path after /api, e.g. /v1/inbound/manage/documents. */

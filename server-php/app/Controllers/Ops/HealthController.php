@@ -38,8 +38,13 @@ use App\Services\Payouts\OutboxService;
  *       }}}}
  *
  * Invoicing is dormant until configured and never changes the top-level "status", which stays the payout readiness.
- * Finance never moves money itself: payouts are released by a person uploading the
- * generated bank file; there is no payment-provider integration to report on.
+ *
+ *       "academy_fees": {"status": "dormant"|"ready"|"incomplete", "checks": {schema, gateway_connection, webhook_secret,
+ *         live_mode, engage_inbound, engage_events, verification_pending, invoice_blocked, engage_events_dead}}
+ *       (Aicountly Academy fee links, docs/ACADEMY_PAYMENTS.md; never changes the top-level status either)
+ *
+ * Finance never moves money out itself: payouts are released by a person uploading the generated bank file. Academy
+ * fees come in through payment links on Aicountly's own Razorpay / Cashfree accounts.
  */
 class HealthController extends BaseController
 {
@@ -61,7 +66,52 @@ class HealthController extends BaseController
             'checks'    => $checks,
             'payouts'   => ['money_movement' => 'manual_bank_upload'],
             'invoicing' => self::invoicing($checks['database']),
+            'academy_fees' => self::academyFees($checks['database']),
         ]);
+    }
+
+    /**
+     * Aicountly Academy fees (docs/ACADEMY_PAYMENTS.md): dormant until a gateway connection is enabled.
+     *
+     * @return array{status:string, checks:array<string,bool>}
+     */
+    private static function academyFees(bool $database): array
+    {
+        $c = [
+            'schema'               => false,
+            'gateway_connection'   => false,   // an enabled default connection exists
+            'webhook_secret'       => false,   // that connection can verify webhooks (Razorpay: webhook secret saved; Cashfree: client secret)
+            'live_mode'            => false,   // the default connection is a live one
+            'engage_inbound'       => S2sFilter::isConfigured(['engage']),
+            'engage_events'        => \App\Services\AcademyFees\EngagePaymentEventOutbox::isConfigured(),
+            'verification_pending' => false,   // alert: a reported payment is not confirmed with the provider yet (older than 15 min) or did not match
+            'invoice_blocked'      => false,   // alert: a verified fee payment has no invoice
+            'engage_events_dead'   => false,   // alert: an event to Engage gave up (Settings → Academy fees → Engage callbacks)
+        ];
+        if ($database) {
+            try {
+                $pdo = Database::pdo();
+                $c['schema'] = (bool) $pdo->query("SELECT to_regclass('public.fin_payment_links') IS NOT NULL AS ok")->fetch()['ok'];
+                if ($c['schema']) {
+                    $d = $pdo->query('SELECT provider, mode, webhook_secret_enc IS NOT NULL AS hook FROM fin_gateway_connections WHERE enabled AND is_default')->fetch();
+                    $c['gateway_connection']   = (bool) $d;
+                    $c['webhook_secret']       = $d && ($d['hook'] || $d['provider'] === 'cashfree');
+                    $c['live_mode']            = $d && $d['mode'] === 'live';
+                    $c['verification_pending'] = (bool) $pdo->query("SELECT 1 FROM fin_gateway_payments WHERE verification_status = 'mismatch'
+                        OR (verification_status = 'pending' AND created_at < now() - interval '15 minutes') LIMIT 1")->fetch();
+                    $c['invoice_blocked']      = (bool) $pdo->query("SELECT 1 FROM fin_gateway_payments WHERE verification_status = 'verified'
+                        AND invoice_state IN ('blocked_config','blocked_data') LIMIT 1")->fetch();
+                    $c['engage_events_dead']   = (bool) $pdo->query("SELECT 1 FROM fin_engage_payment_events WHERE status = 'dead' LIMIT 1")->fetch();
+                }
+            } catch (\Throwable) {
+                // Stays false: health never fails because Academy fees cannot be read.
+            }
+        }
+        $ready  = $c['schema'] && $c['gateway_connection'] && $c['webhook_secret'] && $c['engage_inbound'] && $c['engage_events']
+            && !$c['verification_pending'] && !$c['invoice_blocked'] && !$c['engage_events_dead'];
+        $status = $ready ? 'ready' : (!$c['gateway_connection'] && !$c['engage_inbound'] ? 'dormant' : 'incomplete');
+
+        return ['status' => $status, 'checks' => $c];
     }
 
     /** @return array{status:string, checks:array<string,bool>} */

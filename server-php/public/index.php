@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * Front Controller — FINANCE.AICOUNTLY.ORG PHP API
+ * Front Controller — finance.aicountly.org PHP API
  *
  * All HTTP requests are rewritten to this file via .htaccess. It loads the
  * environment, sets up CORS, resolves the route, applies the auth filter,

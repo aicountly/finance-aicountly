@@ -16,7 +16,8 @@ use App\Support\FiscalYear;
 /**
  * Staff: the invoice register and documents (Finance roles; customers never sign in to Finance).
  *
- *   GET  v1/invoices?fy=&doc_type=&status=&cmp_id=&q=&page=   view      register (invoices + issued credit notes)
+ *   GET  v1/invoices?fy=&doc_type=&status=&cmp_id=&buyer_kind=&q=&page=   view   register (invoices + issued credit notes);
+ *        buyer_kind = company | academy_student (Aicountly Academy fees)
  *   GET  v1/invoices/export?…                                  edit      GSTR-1 friendly CSV (audited)
  *   GET  v1/invoices/{id}                                      view      invoice detail (+ credit notes)
  *   GET  v1/invoices/{id}/pdf                                  view      the PDF stored at issue (audited)
@@ -70,7 +71,7 @@ class InvoiceController extends BaseController
         json_success($cn, 'Credit note requested: someone else must approve it before it is issued.', 201);
     }
 
-    /** @return array{fy:?string, doc_type:?string, status:?string, cmp_id:?int, q:?string} */
+    /** @return array{fy:?string, doc_type:?string, status:?string, cmp_id:?int, buyer_kind:?string, q:?string} */
     private function filters(): array
     {
         $fy = $this->query('fy') ?: null;
@@ -89,9 +90,14 @@ class InvoiceController extends BaseController
         if ($cmp !== null && (!ctype_digit($cmp) || (int) $cmp <= 0)) {
             throw ApiException::validation('cmp_id must be a positive integer.', ['cmp_id' => 'Invalid.']);
         }
+        $kind = $this->query('buyer_kind') ?: null;
+        if ($kind !== null && !in_array($kind, ['company', 'academy_student'], true)) {
+            throw ApiException::validation('buyer_kind must be company or academy_student.', ['buyer_kind' => 'Invalid.']);
+        }
         $q = $this->query('q') ?: null;
 
-        return ['fy' => $fy, 'doc_type' => $docType, 'status' => $status, 'cmp_id' => $cmp === null ? null : (int) $cmp, 'q' => $q === null ? null : mb_substr($q, 0, 60)];
+        return ['fy' => $fy, 'doc_type' => $docType, 'status' => $status, 'cmp_id' => $cmp === null ? null : (int) $cmp, 'buyer_kind' => $kind,
+            'q' => $q === null ? null : mb_substr($q, 0, 60)];
     }
 
     /** @return array{pdf_stored:bool, pdf_sha256:?string, html_sha256:?string, renderer_configured:bool, last_error:?string} */

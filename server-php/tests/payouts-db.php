@@ -52,10 +52,24 @@ const ENGAGE_OUT_KEY = 'finance-to-engage-callback-key-0123456789abcdef';
 
 test('migrations: applied once, re-run is a no-op, an edited migration is refused', function () use ($pdo, $cacheDir): void {
     $m = new Migrator($pdo, __DIR__ . '/../database/migrations');
-    $applied = $m->migrate();
-    same(['001_payouts', '002_company_bank_accounts', '003_invoicing'], array_slice($applied, 0, 3), 'first run applies 001, 002 and 003');
-    check(in_array('004_invoice_line_discounts', $applied, true), 'and 004 (discounted invoice lines)');
+    same(['001_payouts', '002_company_bank_accounts', '003_invoicing', '004_invoice_line_discounts', '005_academy_fees', '006_brand_aicountly',
+        '007_narration_prefix_mixed_case'], $m->migrate(), 'first run applies 001–007 in order (004 discounted invoice lines, 005 Academy fees, 006/007 brand)');
     same([], $m->migrate(), 'second run applies nothing');
+    check(str_starts_with((string) $pdo->query("SELECT obj_description('fin_invoices'::regclass, 'pg_class')")->fetchColumn(), 'GST tax invoices for Aicountly subscriptions'),
+        '006 writes the brand as Aicountly in the table comment');
+    $pdo->exec((string) file_get_contents(__DIR__ . '/../database/migrations/006_brand_aicountly.sql'));
+    check(true, '006 is idempotent (re-running its SQL is harmless)');
+    same('Aicountly Commission', $pdo->query("SELECT value FROM settings WHERE key = 'narration_prefix'")->fetchColumn(), '007: seeded narration prefix in mixed case');
+    same(1, (int) $pdo->query("SELECT count(*) FROM audit_log WHERE action = 'settings.updated' AND entity_id = 'narration_prefix'")->fetchColumn(), '007 audited');
+    $pdo->exec((string) file_get_contents(__DIR__ . '/../database/migrations/007_narration_prefix_mixed_case.sql'));
+    same(1, (int) $pdo->query("SELECT count(*) FROM audit_log WHERE action = 'settings.updated' AND entity_id = 'narration_prefix'")->fetchColumn(), '007 is idempotent');
+    $pdo->exec("UPDATE settings SET value = 'AICOUNTLY COMMISSION' WHERE key = 'narration_prefix'");
+    $pdo->exec((string) file_get_contents(__DIR__ . '/../database/migrations/007_narration_prefix_mixed_case.sql'));
+    same('Aicountly Commission', $pdo->query("SELECT value FROM settings WHERE key = 'narration_prefix'")->fetchColumn(), '007 updates only the exact seeded value…');
+    $pdo->exec("UPDATE settings SET value = 'AIC PAYOUT' WHERE key = 'narration_prefix'");
+    $pdo->exec((string) file_get_contents(__DIR__ . '/../database/migrations/007_narration_prefix_mixed_case.sql'));
+    same('AIC PAYOUT', $pdo->query("SELECT value FROM settings WHERE key = 'narration_prefix'")->fetchColumn(), '…and never an admin\'s own prefix');
+    $pdo->exec("UPDATE settings SET value = 'Aicountly Commission' WHERE key = 'narration_prefix'");
     same([], $m->pending(), 'nothing pending');
 
     $dir = $cacheDir . '/migrations-edited';

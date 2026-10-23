@@ -31,6 +31,7 @@ const NAV = [
   { to: '/tds', label: 'TDS register' },
   { to: '/invoices', label: 'Invoices' },
   { to: '/offline-payments', label: 'Offline payments' },
+  { to: '/academy', label: 'Academy fees' },
   { to: '/settings', label: 'Settings' },
   { to: '/audit', label: 'Audit log' },
 ]
@@ -39,6 +40,7 @@ export function Layout({ user, onSignOut }: { user: FinanceUser; onSignOut: () =
   const { can } = useFinanceAccess()
   const { pathname } = useLocation()
   const invoicing = /^\/(invoices|credit-notes|offline-payments)/.test(pathname)
+  const academy = pathname.startsWith('/academy')
 
   return (
     <div className="shell">
@@ -60,7 +62,7 @@ export function Layout({ user, onSignOut }: { user: FinanceUser; onSignOut: () =
 
       <div className="main">
         <header className="topbar">
-          <div className="topbar-title">{invoicing ? 'Subscription invoicing' : 'Seller payouts'}</div>
+          <div className="topbar-title">{academy ? 'Aicountly Academy fees' : invoicing ? 'Subscription invoicing' : 'Seller payouts'}</div>
           <div className="topbar-actions">
             <div className="user-chip">
               <span className="avatar">{initials(user)}</span>
