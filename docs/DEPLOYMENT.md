@@ -345,3 +345,26 @@ To activate after a deploy (migration `003_invoicing` is applied by the deploy's
    ```
 
 5. Check `GET /api/health` → `invoicing.status` is `ready`.
+
+## Aicountly Academy fees (payment links)
+
+Dormant until configured; nothing changes for payouts or subscription invoicing. Architecture,
+the Engage contract, provider setup and the go-live checklist:
+[ACADEMY_PAYMENTS.md](ACADEMY_PAYMENTS.md). Migration `005_academy_fees` is applied by the
+deploy's `bin/migrate.php` step. Not for the 2026-10-25 soft launch: launch-day links are
+made by hand in the Razorpay / Cashfree dashboards.
+
+1. Subscription invoicing must be active (seller profile + the FY's series), and
+   `FINANCE_DATA_KEY` set (gateway secrets are encrypted with it).
+2. Set the Engage keys in `api/.env` (see `server-php/.env.example` § Academy fees):
+   `FINANCE_INBOUND_ENGAGE_SECRET_<KEYID>` + `FINANCE_INBOUND_ENGAGE_SCOPE_<KEYID>=issue`,
+   `FINANCE_OUTBOUND_ENGAGE_S2S_KEY_ID` / `FINANCE_OUTBOUND_ENGAGE_S2S_SECRET`, and `BASE_URL`.
+3. As a finance admin: Settings → Payment gateways → add the connection, **Test connection**,
+   enable it; register the webhook URL shown there in the provider dashboard.
+4. Add the cron line:
+
+   ```cron
+   */5 * * * * php /home/<user>/public_html/api/bin/academy-fees-cron.php >> /home/<user>/logs/finance-academy-fees.log 2>&1
+   ```
+
+5. Check `GET /api/health` → `academy_fees.status` is `ready`.

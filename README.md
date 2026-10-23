@@ -8,6 +8,11 @@ bulk-upload file, and record the bank's UTRs. Finance never moves money itself.
 The second is **subscription invoicing** (dormant until configured): GST tax
 invoices and credit notes for AICOUNTLY subscriptions, read by Manage server to
 server — see [docs/INVOICING.md](docs/INVOICING.md).
+The third is **Aicountly Academy fees** (dormant until configured): payment links for
+Aicountly Edge / Aicountly Aspire fees on Aicountly's own Razorpay / Cashfree accounts,
+requested by Engage server to server or raised by staff, verified with the provider,
+invoiced to the student (B2C) and reported back to Engage — see
+[docs/ACADEMY_PAYMENTS.md](docs/ACADEMY_PAYMENTS.md).
 
 | Environment | URL |
 | --- | --- |
@@ -116,6 +121,20 @@ status back to `POST {ENGAGE_API_BASE_URL}/v1/inbound/finance/payout-status`
 `bin/outbox-deliver.php`. Database, cron, env and the tax assumptions to confirm
 with your CA: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#weekly-seller-payouts).
 
+## Aicountly Academy fees
+
+| Screen | What it does |
+| --- | --- |
+| Academy fees | payment links (from Engage or raised in Finance), payments with their verification and invoice, webhook log, Engage callbacks (re-queue dead ones: finance admins) |
+| Raise payment link | maker (accountant and up) enters the fee, the student and the gateway; someone else approves it (four-eyes), then it is created at Razorpay / Cashfree and its URL shared |
+| Settings → Payment gateways | Razorpay / Cashfree connections per mode (finance admins): key id, write-only encrypted secrets, test connection, enable, default; the webhook URLs to register |
+
+Engage calls `POST /api/v1/inbound/engage/payment-links` (AIC-S2S v1, client `engage`, issue key, `Idempotency-Key`);
+the providers call `POST /api/v1/webhooks/razorpay` / `…/cashfree` (signature over the raw body). Finance re-reads every
+payment from the provider before it counts, issues the GST invoice (`buyer_kind = academy_student`, no `cmp_id`) and
+sends `payment.succeeded` / `payment.refunded` to Engage (`bin/academy-fees-cron.php`). Contract, provider setup,
+go-live checklist and the provider details still to verify: [docs/ACADEMY_PAYMENTS.md](docs/ACADEMY_PAYMENTS.md).
+
 ## Subscription invoicing
 
 | Screen | What it does |
@@ -138,13 +157,14 @@ real API under `php -S` against a stub Console, and the payout flow end to end
 against PostgreSQL (own database `finance_test` — `FINANCE_TEST_DB_NAME` overrides —
 plus `<name>_legacy` for the migration-002 test, both dropped afterwards; stub Engage
 for the outbox; invoicing against the same database with a stub Gotenberg and
-two concurrent issuing processes). Defaults to `127.0.0.1:5432` `postgres/postgres`
+two concurrent issuing processes; Academy fees against the same database with a stub Razorpay / Cashfree,
+stub Engage and the cron). Defaults to `127.0.0.1:5432` `postgres/postgres`
 (`FINANCE_TEST_DB_*` override); the PostgreSQL part is skipped with a warning
 when it is unreachable unless `FINANCE_TESTS_REQUIRE_DB=1`.
 
 API scripts (CLI only): `php server-php/bin/migrate.php [--status]`,
-`php server-php/bin/outbox-deliver.php` and `php server-php/bin/invoicing-cron.php`
-(both cron, every 5 min).
+`php server-php/bin/outbox-deliver.php`, `php server-php/bin/invoicing-cron.php` and
+`php server-php/bin/academy-fees-cron.php` (all cron, every 5 min).
 
 | Script | Purpose |
 | --- | --- |
