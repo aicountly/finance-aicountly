@@ -26,9 +26,11 @@ finance_load_env(dirname(__DIR__) . '/.env');
  * 2. Error reporting based on environment
  * ------------------------------------------------------------------ */
 
-$appEnv = $_ENV['APP_ENV'] ?? 'development';
+// Errors are shown only when APP_ENV says development / local explicitly: a missing or mistyped APP_ENV on the
+// server must not print stack traces, file paths or SQL to clients (security audit, Oct 2026).
+$appEnv = $_ENV['APP_ENV'] ?? 'production';
 
-if ($appEnv === 'production') {
+if (!in_array($appEnv, ['development', 'local', 'testing'], true)) {
     error_reporting(0);
     ini_set('display_errors', '0');
 } else {
