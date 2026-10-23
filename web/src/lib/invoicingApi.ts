@@ -84,7 +84,8 @@ interface DocumentBase {
   doc_no: string | null
   doc_date: string | null
   fy: string | null
-  cmp_id: number
+  cmp_id: number | null
+  buyer_kind: 'company' | 'academy_student'
   seller: SellerSnapshot | null
   buyer: PartyBlock
   place_of_supply: { code: string; name: string }
@@ -149,7 +150,8 @@ export interface RegisterRow {
   doc_no: string | null
   doc_date: string | null
   fy: string | null
-  cmp_id: number
+  cmp_id: number | null
+  buyer_kind: 'company' | 'academy_student'
   buyer_legal_name: string
   buyer_gstin: string | null
   place_of_supply: string
@@ -173,6 +175,7 @@ export interface RegisterFilters {
   doc_type?: string
   status?: string
   cmp_id?: string
+  buyer_kind?: string
   q?: string
   page?: number
 }

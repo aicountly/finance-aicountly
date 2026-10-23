@@ -16,6 +16,8 @@ import { InvoicesPage } from './pages/InvoicesPage'
 import { InvoicePage } from './pages/InvoicePage'
 import { CreditNotePage } from './pages/CreditNotePage'
 import { OfflinePaymentsPage } from './pages/OfflinePaymentsPage'
+import { AcademyFeesPage } from './pages/AcademyFeesPage'
+import { AcademyLinkPage } from './pages/AcademyLinkPage'
 
 function App() {
   const { user, loading, redirecting, error, signOut } = useFinanceAuth()
@@ -55,6 +57,8 @@ function App() {
             <Route path="invoices/:id" element={<InvoicePage />} />
             <Route path="credit-notes/:id" element={<CreditNotePage />} />
             <Route path="offline-payments" element={<OfflinePaymentsPage />} />
+            <Route path="academy" element={<AcademyFeesPage />} />
+            <Route path="academy/links/:id" element={<AcademyLinkPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="audit" element={<AuditLogPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />

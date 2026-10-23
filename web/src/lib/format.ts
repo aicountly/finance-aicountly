@@ -68,6 +68,14 @@ const LABELS: Record<string, string> = {
   not_issued: 'Not issued',
   blocked_config: 'Blocked: setup missing',
   blocked_data: 'Blocked: data',
+  creating: 'Creating…',
+  created: 'Open',
+  expired: 'Expired',
+  mismatch: 'Mismatch',
+  received: 'Received',
+  processed: 'Processed',
+  ignored: 'Ignored',
+  error: 'Error',
 }
 
 export function statusLabel(status: string): string {

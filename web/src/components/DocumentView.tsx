@@ -52,7 +52,8 @@ export function DocumentView({ doc }: { doc: Invoice | CreditNote }) {
             {'\n'}
             {intra ? 'Intra-state (CGST + SGST)' : 'Inter-state (IGST)'}
             {'\n'}Reverse charge: {doc.reverse_charge ? 'Yes' : 'No'}
-            {'\n'}Company (cmp_id): {doc.cmp_id}
+            {'\n'}
+            {doc.buyer_kind === 'academy_student' ? 'Aicountly Academy student (no company)' : `Company (cmp_id): ${doc.cmp_id}`}
           </p>
         </div>
       </div>
