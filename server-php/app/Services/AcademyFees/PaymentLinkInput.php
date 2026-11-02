@@ -31,6 +31,20 @@ use App\Support\Money;
  */
 final class PaymentLinkInput
 {
+    /**
+     * What is being paid for. Decides which fields are required — and the database
+     * says the same thing, so a caller cannot talk its way past this (migration 008,
+     * fin_payment_links_purpose_fields_chk).
+     *
+     *   academy_fee  a student's course fee: an admission reference and a course
+     *                stream, no Manage company, no GSTIN.
+     *   tokens       a signed-in customer buying AI tokens: a company (so Manage can
+     *                show them the invoice), a licence holder (so the tokens can be
+     *                granted to the right account), a token count, and optionally a
+     *                GSTIN if they are a registered business.
+     */
+    public const PURPOSES         = ['academy_fee', 'tokens'];
+
     public const STREAMS          = ['edge' => 'Aicountly Edge', 'aspire' => 'Aicountly Aspire'];
     public const MIN_EXPIRY       = 15 * 60;            // Razorpay refuses an expiry under 15 minutes away
     public const MAX_EXPIRY       = 180 * 86400;
@@ -51,17 +65,67 @@ final class PaymentLinkInput
         if ($sourceRef === null && ($strict || self::present($in['source_ref'] ?? null))) {
             $e['source_ref'] = $strict ? 'The Engage lead code is required (1–64 letters, digits or _ . : / -).' : 'Letters, digits or _ . : / - (at most 64).';
         }
+        $purpose = is_string($in['purpose'] ?? null) ? strtolower(trim($in['purpose'])) : 'academy_fee';
+        if (!in_array($purpose, self::PURPOSES, true)) {
+            $e['purpose'] = 'academy_fee (a student fee) or tokens (a customer buying AI tokens).';
+            $purpose = 'academy_fee';
+        }
+        $tokens = $purpose === 'tokens';
+
         $academyRef = self::ref($in['academy_ref'] ?? null);
-        if ($academyRef === null) {
-            $e['academy_ref'] = 'The Academy admission / fee-account reference is required (1–64 letters, digits or _ . : / -).';
+        $stream     = is_string($in['stream'] ?? null) ? strtolower(trim($in['stream'])) : '';
+        $cmpId = null;
+        $holder = null;
+        $tokenCount = null;
+        $buyerGstin = null;
+
+        if ($tokens) {
+            // Academy's two identifiers are meaningless here and are refused rather than
+            // ignored: a caller that sends them has confused the two flows, and silently
+            // dropping them would hide that until somebody read the database.
+            foreach (['academy_ref' => $academyRef, 'stream' => $stream === '' ? null : $stream] as $k => $v) {
+                if ($v !== null) {
+                    $e[$k] = 'Not used for a token purchase.';
+                }
+            }
+            $academyRef = null;
+            $stream     = '';
+
+            $cmpId = self::posInt($in['cmp_id'] ?? null);
+            if ($cmpId === null) {
+                // Without it the invoice is invisible to the customer who paid for it:
+                // Manage's document reads filter by cmp_id.
+                $e['cmp_id'] = 'The Manage company id, or the customer cannot see their own invoice.';
+            }
+            $holder = is_scalar($in['buyer_uuid'] ?? null) ? trim((string) $in['buyer_uuid']) : '';
+            if (preg_match('/^[A-Za-z0-9._:-]{1,64}$/', $holder) !== 1) {
+                $e['buyer_uuid'] = 'The licence holder\'s my.aicountly uuid: the tokens are granted to them.';
+                $holder = null;
+            }
+            $tokenCount = self::posInt($in['token_count'] ?? null);
+            if ($tokenCount === null || $tokenCount > 100000000000) {
+                $e['token_count'] = 'How many tokens the customer is buying (a whole number above zero).';
+            }
+            $buyerGstin = Gstin::normalise($in['buyer_gstin'] ?? null);
+            if ($buyerGstin !== '' && ($problem = Gstin::problem($buyerGstin)) !== null) {
+                $e['buyer_gstin'] = $problem;
+            }
+        } else {
+            if ($academyRef === null) {
+                $e['academy_ref'] = 'The Academy admission / fee-account reference is required (1–64 letters, digits or _ . : / -).';
+            }
+            if (!isset(self::STREAMS[$stream])) {
+                $e['stream'] = 'edge (Aicountly Edge) or aspire (Aicountly Aspire).';
+            }
         }
-        $stream = is_string($in['stream'] ?? null) ? strtolower(trim($in['stream'])) : '';
-        if (!isset(self::STREAMS[$stream])) {
-            $e['stream'] = 'edge (Aicountly Edge) or aspire (Aicountly Aspire).';
-        }
+
         $product = is_string($in['product_code'] ?? null) ? strtolower(trim($in['product_code'])) : '';
         if ($product === '' && isset(self::STREAMS[$stream])) {
             $product = $stream;
+        }
+        if ($product === '' && $tokens) {
+            // The AI tokens are sold by the platform rather than by one application.
+            $product = 'manage';
         }
         if (!preg_match('/^[a-z0-9][a-z0-9_.-]{0,63}$/', $product)) {
             $e['product_code'] = 'The Engage product code (lower case letters, digits, _ . -), e.g. edge.';
@@ -79,7 +143,7 @@ final class PaymentLinkInput
         $p     = is_array($in['payer'] ?? null) ? $in['payer'] : [];
         $name  = InvoiceInput::text($p['name'] ?? null, 100);
         if ($name === '') {
-            $e['payer.name'] = 'The student\'s name (as on the invoice).';
+            $e['payer.name'] = $tokens ? 'The payer\'s name (as on the invoice).' : 'The student\'s name (as on the invoice).';
         }
         $email = InvoiceInput::text($p['email'] ?? null, 254);
         if ($email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
@@ -94,7 +158,7 @@ final class PaymentLinkInput
             $state = '0' . $state;
         }
         if (!Gstin::isStateCode($state)) {
-            $e['payer.state_code'] = 'The student\'s state as a GST state code (two digits, e.g. 27 for Maharashtra): it is the place of supply.';
+            $e['payer.state_code'] = 'The payer\'s state as a GST state code (two digits, e.g. 27 for Maharashtra): it is the place of supply.';
         }
         $address = InvoiceInput::text($p['address'] ?? null, 300, true);
         $pincode = trim(is_scalar($p['pincode'] ?? null) ? (string) $p['pincode'] : '');
@@ -181,9 +245,14 @@ final class PaymentLinkInput
         }
 
         return [
+            'purpose'       => $purpose,
+            'cmp_id'        => $cmpId,
+            'buyer_uuid'    => $holder,
+            'token_count'   => $tokenCount,
+            'buyer_gstin'   => ($buyerGstin ?? '') !== '' ? $buyerGstin : null,
             'source_ref'    => $sourceRef,
             'academy_ref'   => $academyRef,
-            'stream'        => $stream,
+            'stream'        => $stream === '' ? null : $stream,
             'product_code'  => $product,
             'seller_code'   => $seller === '' ? null : $seller,
             'description'   => $desc,
@@ -202,6 +271,17 @@ final class PaymentLinkInput
             'notify_sms'    => ($notify['sms'] ?? false) === true,
             'notify_email'  => ($notify['email'] ?? false) === true,
         ];
+    }
+
+    /** A positive whole number, or null. */
+    private static function posInt(mixed $v): ?int
+    {
+        if (!is_scalar($v) || trim((string) $v) === '' || preg_match('/^\d+$/', trim((string) $v)) !== 1) {
+            return null;
+        }
+        $n = (int) trim((string) $v);
+
+        return $n > 0 ? $n : null;
     }
 
     /** The discount fields a fee may carry (same names and rules as invoice lines, docs/INVOICING.md "Discounted lines"). */

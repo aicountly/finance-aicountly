@@ -698,3 +698,78 @@ test('health: academy_fees checks (booleans only); payouts and Manage untouched;
     }
     check(count($seen) > 50, 'checked ' . count($seen) . ' answers for secrets');
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Buying AI tokens through the same route (migration 008). The fee flow is
+// unchanged; what differs is the buyer — a signed-in customer with a company and
+// a licence holder, rather than a student with neither.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Rs 1,000 of tokens at Rs 1 / 1,000 tokens, GST EXCLUSIVE: Rs 1,000 + 18% = Rs 1,180. */
+function tokenRequest(string $orderRef, array $extra = []): array
+{
+    return $extra + [
+        'purpose'      => 'tokens',
+        'source_ref'   => $orderRef,
+        'cmp_id'       => 4242,
+        'buyer_uuid'   => 'holder-9001',
+        'token_count'  => 1000000,
+        'product_code' => 'manage',
+        'description'  => '1,000,000 Aicountly AI tokens',
+        'payer'        => ['name' => 'Priya Sharma', 'email' => 'priya@example.test', 'mobile' => '9876500011', 'state_code' => '27'],
+        'amount_paise' => 118000,
+        'fee'          => ['taxable_paise' => 100000, 'cgst_paise' => 9000, 'sgst_paise' => 9000, 'igst_paise' => 0,
+            'sac' => '997331', 'gst_rate' => '18', 'price_basis' => 'exclusive'],
+    ];
+}
+
+test('Engage creates a TOKEN purchase link: the buyer needs a company and a holder, Academy fields are refused, one open link per order', function () use ($pdo): void {
+    $req = tokenRequest('TOK-2026-0001');
+
+    // The two identifiers that make a token purchase attributable.
+    foreach (['cmp_id', 'buyer_uuid', 'token_count'] as $field) {
+        $bad = $req;
+        unset($bad[$field]);
+        $r = engage('POST', '', $bad, ['idem' => 'tok-missing-' . $field]);
+        same([422, 'validation_failed'], [$r['status'], $r['json']['error']['code'] ?? null], "a token link without {$field} is refused");
+        check(isset($r['json']['error']['details'][$field]), "the refusal names {$field}");
+    }
+
+    // Academy's fields are refused rather than ignored: sending them means the two
+    // flows have been confused, and dropping them silently would hide that.
+    $muddled = engage('POST', '', ['academy_ref' => 'EDGE-X', 'stream' => 'edge'] + $req, ['idem' => 'tok-muddled']);
+    same([422, 'validation_failed'], [$muddled['status'], $muddled['json']['error']['code'] ?? null], 'academy fields on a token link are refused');
+
+    // GST is still checked against Finance's own rules.
+    $wrong = $req;
+    $wrong['fee']['cgst_paise'] = 0;
+    $wrong['fee']['igst_paise'] = 18000;
+    $m = engage('POST', '', $wrong, ['idem' => 'tok-mismatch']);
+    same([422, 'fee_breakdown_mismatch'], [$m['status'], $m['json']['error']['code'] ?? null], 'IGST claimed for a Maharashtra buyer is refused');
+
+    $c = engage('POST', '', $req, ['idem' => 'tok-order-1']);
+    same(201, $c['status'], 'created: ' . $c['body']);
+    $d = $c['json']['data'];
+    same(['tokens', 4242, 'holder-9001', 1000000, 118000, null, null],
+        [$d['purpose'], $d['cmp_id'], $d['buyer_uuid'], $d['token_count'], $d['amount_paise'], $d['academy_ref'], $d['stream']],
+        'the link knows who the tokens are for, and carries no Academy identity');
+
+    // Rs 1,000 taxable + Rs 180 GST = Rs 1,180 collected, which is the price the
+    // Token Conversions screen quotes.
+    $row = $pdo->query("SELECT fee_taxable_paise, fee_cgst_paise, fee_sgst_paise, fee_igst_paise, amount_paise, purpose
+                          FROM fin_payment_links WHERE source_ref = 'TOK-2026-0001'")->fetch();
+    same([100000, 9000, 9000, 0, 118000, 'tokens'],
+        [(int) $row['fee_taxable_paise'], (int) $row['fee_cgst_paise'], (int) $row['fee_sgst_paise'], (int) $row['fee_igst_paise'],
+            (int) $row['amount_paise'], $row['purpose']], 'Rs 1,000 + 18% GST = Rs 1,180');
+
+    // A customer must never be shown two live links for one order.
+    $again = engage('POST', '', $req, ['idem' => 'tok-order-1-again']);
+    same([409, 'open_link_exists'], [$again['status'], $again['json']['error']['code'] ?? null], 'one open link per order');
+
+    // A different order is fine.
+    same(201, engage('POST', '', tokenRequest('TOK-2026-0002'), ['idem' => 'tok-order-2'])['status'], 'a second order gets its own link');
+
+    // And an Academy fee still works exactly as before.
+    same(201, engage('POST', '', feeRequest('EDGE-ADM-TOKENS-COEXIST'), ['idem' => 'fee-after-tokens'])['status'],
+        'the Academy flow is untouched');
+});
