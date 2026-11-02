@@ -34,6 +34,16 @@ final class InvoiceService
     /** Buyer kinds (fin_invoices.buyer_kind): a Manage company (cmp_id), or an Aicountly Academy student (no cmp_id, no GSTIN). */
     public const BUYER_COMPANY = 'company';
     public const BUYER_ACADEMY_STUDENT = 'academy_student';
+    /**
+     * A signed-in Aicountly customer buying something self-serve — today, AI tokens.
+     *
+     * Unlike an Academy student this buyer HAS a Manage company, deliberately: Manage's
+     * document reads filter by cmp_id, so an invoice without one is invisible to the very
+     * customer who paid for it. And unlike a company licence it must carry buyer_uuid, because
+     * what is bought is granted to the licence HOLDER, and a payment nobody can attribute is a
+     * payment nobody can act on. A registered business keeps its GSTIN on the invoice.
+     */
+    public const BUYER_SAAS_CUSTOMER = 'saas_customer';
 
     /**
      * CGST Rule 46(e): an invoice to an unregistered recipient whose taxable value is ₹50,000 or more carries the
@@ -238,8 +248,9 @@ final class InvoiceService
         $errors  = [];
         $kind    = $order['buyer_kind'] ?? self::BUYER_COMPANY;
         $student = $kind === self::BUYER_ACADEMY_STUDENT;
-        if (!in_array($kind, [self::BUYER_COMPANY, self::BUYER_ACADEMY_STUDENT], true)) {
-            $errors['buyer_kind'] = 'company or academy_student.';
+        $saas    = $kind === self::BUYER_SAAS_CUSTOMER;
+        if (!in_array($kind, [self::BUYER_COMPANY, self::BUYER_ACADEMY_STUDENT, self::BUYER_SAAS_CUSTOMER], true)) {
+            $errors['buyer_kind'] = 'company, academy_student or saas_customer.';
         } elseif ($student) {
             if ($order['cmp_id'] !== null) {
                 $errors['cmp_id'] = 'An Aicountly Academy student has no Manage company id.';
@@ -247,10 +258,24 @@ final class InvoiceService
             if ($order['source'] !== 'payment') {
                 $errors['source'] = 'Academy students are invoiced only for gateway payments.';
             }
+        } elseif ($saas) {
+            if ((int) $order['cmp_id'] <= 0) {
+                $errors['cmp_id'] = 'The Manage company id is required, or the customer cannot see their own invoice.';
+            }
+            if (trim((string) ($order['buyer_uuid'] ?? '')) === '') {
+                $errors['buyer_uuid'] = 'The licence holder\'s my.aicountly uuid is required: what was bought is granted to them.';
+            }
+            if ($order['source'] !== 'payment') {
+                $errors['source'] = 'A self-serve purchase is invoiced only for a verified gateway payment.';
+            }
         } elseif ((int) $order['cmp_id'] <= 0) {
             $errors['cmp_id'] = 'The Manage company id is required.';
         }
-        $buyer = InvoiceInput::buyer($order['buyer'], $errors, 'buyer.', !$student);
+        // A self-serve buyer is treated like the student for ADDRESS: an individual buying a
+        // small amount need not give one (CGST Rule 46(e) only bites at Rs 50,000), and
+        // demanding it would put a form in front of a Rs 118 purchase. The threshold below
+        // still applies to both.
+        $buyer = InvoiceInput::buyer($order['buyer'], $errors, 'buyer.', !($student || $saas));
         if ($student && $buyer['gstin'] !== null) {
             $errors['buyer.gstin'] = 'An Academy student is invoiced as an unregistered individual (no GSTIN).';
         }
@@ -264,9 +289,13 @@ final class InvoiceService
         $pos    = GstCalculator::placeOfSupply($buyer['gstin'], $buyer['state_code']);
         $calc   = InvoiceInput::compute($lines, (string) $seller['state_code'], $pos);
         $total  = $calc['totals']['total'];
-        if ($student) {
-            if ($calc['totals']['taxable'] >= self::UNREGISTERED_ADDRESS_THRESHOLD_PAISE && ($buyer['address'] === '' || $buyer['pincode'] === '')) {
-                InvoiceInput::throwIf(['buyer.address' => 'The student\'s address and PIN are required from a taxable value of ₹50,000 (CGST Rule 46(e)).'],
+        if ($student || $saas) {
+            // Rule 46(e): an UNREGISTERED buyer at or above Rs 50,000 must give an address.
+            // A registered one has already given a GSTIN, which carries their state.
+            if ($buyer['gstin'] === null
+                && $calc['totals']['taxable'] >= self::UNREGISTERED_ADDRESS_THRESHOLD_PAISE
+                && ($buyer['address'] === '' || $buyer['pincode'] === '')) {
+                InvoiceInput::throwIf(['buyer.address' => 'The buyer\'s address and PIN are required from a taxable value of ₹50,000 (CGST Rule 46(e)).'],
                     'The order cannot be invoiced: some fields are invalid.');
             }
             if ($buyer['address'] === '') {
