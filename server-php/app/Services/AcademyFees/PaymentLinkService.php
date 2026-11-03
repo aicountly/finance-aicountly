@@ -313,26 +313,35 @@ final class PaymentLinkService
     private function insert(array $v, array $conn, string $sourceApp, ?string $idempotencyKey, ?string $hash, string $status, array $actor): int
     {
         return $this->tx(function () use ($v, $conn, $sourceApp, $idempotencyKey, $hash, $status, $actor): int {
-            $clash = $this->pdo->prepare("SELECT link_id, status FROM fin_payment_links WHERE academy_ref = ? AND status IN ('pending_approval','creating','created','partially_paid','paid')
+            // One open and one paid link per thing being paid for. A course fee is keyed on
+            // its admission reference; a token order has none, so it is keyed on Engage's
+            // order reference. Both are also partial unique indexes, so a race loses there
+            // rather than producing two live links a customer could pay twice.
+            $clashKey = $v['purpose'] === 'tokens' ? 'source_ref' : 'academy_ref';
+            $clashVal = $v['purpose'] === 'tokens' ? $v['source_ref'] : $v['academy_ref'];
+            $what     = $v['purpose'] === 'tokens' ? "order {$clashVal}" : "fee {$clashVal}";
+            $clash = $this->pdo->prepare("SELECT link_id, status FROM fin_payment_links WHERE {$clashKey} = ? AND purpose = '{$v['purpose']}' AND status IN ('pending_approval','creating','created','partially_paid','paid')
                                            ORDER BY (status = 'paid') DESC LIMIT 1");
-            $clash->execute([$v['academy_ref']]);
+            $clash->execute([$clashVal]);
             if ($c = $clash->fetch()) {
                 if ($c['status'] === 'paid') {
-                    throw ApiException::coded(409, 'already_paid', "The fee {$v['academy_ref']} is already paid.", ['link_id' => $c['link_id']]);
+                    throw ApiException::coded(409, 'already_paid', "The {$what} is already paid.", ['link_id' => $c['link_id']]);
                 }
-                throw ApiException::coded(409, 'open_link_exists', "A payment link for {$v['academy_ref']} is already open: cancel it first or use it.",
+                throw ApiException::coded(409, 'open_link_exists', "A payment link for the {$what} is already open: cancel it first or use it.",
                     ['link_id' => $c['link_id'], 'status' => $c['status']]);
             }
             $stmt = $this->pdo->prepare(
-                'INSERT INTO fin_payment_links (link_id, source_app, idempotency_key, request_sha256, source_ref, academy_ref, stream, product_code, seller_code, description,
+                'INSERT INTO fin_payment_links (link_id, source_app, purpose, cmp_id, buyer_uuid, token_count, buyer_gstin,
+                     idempotency_key, request_sha256, source_ref, academy_ref, stream, product_code, seller_code, description,
                      payer_name, payer_email, payer_mobile, payer_state_code, payer_address, payer_pincode, amount_paise, fee_taxable_paise, fee_cgst_paise,
                      fee_sgst_paise, fee_igst_paise, fee_sac, fee_gst_rate, fee_price_basis, fee_breakdown, seller_state_code, place_of_supply, supply_type,
                      connection_id, provider, mode, expire_at, notify_sms, notify_email, status, created_by)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, to_timestamp(?), ?, ?, ?, ?) RETURNING id',
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, to_timestamp(?), ?, ?, ?, ?) RETURNING id',
             );
             $f = $v['fee'];
             $stmt->execute([
-                'fin_pl_' . Ulid::generate(), $sourceApp, $idempotencyKey, $hash, $v['source_ref'], $v['academy_ref'], $v['stream'], $v['product_code'], $v['seller_code'],
+                'fin_pl_' . Ulid::generate(), $sourceApp, $v['purpose'], $v['cmp_id'], $v['buyer_uuid'], $v['token_count'], $v['buyer_gstin'],
+                $idempotencyKey, $hash, $v['source_ref'], $v['academy_ref'], $v['stream'], $v['product_code'], $v['seller_code'],
                 $v['description'], $v['payer']['name'], $v['payer']['email'], $v['payer']['mobile'], $v['payer']['state_code'], $v['payer']['address'], $v['payer']['pincode'],
                 $v['amount_paise'], $f['taxable_paise'], $f['cgst_paise'], $f['sgst_paise'], $f['igst_paise'], $f['sac'], $f['gst_rate'], $f['price_basis'],
                 json_encode($v['fee_breakdown'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR), $v['seller_state'], $v['place_of_supply'],
@@ -342,7 +351,8 @@ final class PaymentLinkService
             $id  = (int) $stmt->fetchColumn();
             $row = $this->row($id);
             $this->audit->record($actor, $sourceApp === 'engage' ? 'payment_link.requested' : 'payment_link.raised', 'payment_link', $id, null, [
-                'link_id' => $row['link_id'], 'source_app' => $sourceApp, 'source_ref' => $row['source_ref'], 'academy_ref' => $row['academy_ref'], 'stream' => $row['stream'],
+                'link_id' => $row['link_id'], 'source_app' => $sourceApp, 'purpose' => $v['purpose'], 'source_ref' => $row['source_ref'],
+                'academy_ref' => $row['academy_ref'], 'stream' => $row['stream'], 'token_count' => $v['token_count'],
                 'amount_paise' => (int) $row['amount_paise'], 'provider' => $row['provider'], 'mode' => $row['mode'], 'status' => $status,
             ]);
 
@@ -400,8 +410,15 @@ final class PaymentLinkService
             'currency'          => 'INR',
             'expire_at'         => self::iso($row['expire_at']),
             'source_ref'        => $row['source_ref'],
-            'academy_ref'       => (string) $row['academy_ref'],
-            'stream'            => (string) $row['stream'],
+            'purpose'           => (string) ($row['purpose'] ?? 'academy_fee'),
+            // Null on an academy fee; set on a token purchase. Engage grants exactly
+            // token_count once the payment is confirmed, so it reads it back from here
+            // rather than trusting its own copy.
+            'cmp_id'            => $row['cmp_id'] === null ? null : (int) $row['cmp_id'],
+            'buyer_uuid'        => $row['buyer_uuid'],
+            'token_count'       => $row['token_count'] === null ? null : (int) $row['token_count'],
+            'academy_ref'       => $row['academy_ref'],
+            'stream'            => $row['stream'],
             'product_code'      => (string) $row['product_code'],
             'seller_code'       => $row['seller_code'],
             'fee'               => self::fee($row),

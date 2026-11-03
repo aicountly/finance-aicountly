@@ -210,7 +210,14 @@ final class GatewayPaymentService
             return ['state' => 'blocked_data', 'invoice' => null, 'error' => (string) $pay['invoice_error']];
         }
         try {
-            $inv = $this->invoices()->issueForPayment($paymentId, new GatewayPaymentInvoiceSource($this->pdo), InvoiceService::SYSTEM);
+            // Which kind of thing was bought decides how the buyer is described: an Academy
+            // student has no company and no GSTIN, a token buyer has both a company and a
+            // licence holder. Both record their payment in fin_gateway_payments, so this is
+            // the one place the two paths part.
+            $source = $this->isTokenPurchase($paymentId)
+                ? new TokenPurchaseInvoiceSource($this->pdo)
+                : new GatewayPaymentInvoiceSource($this->pdo);
+            $inv = $this->invoices()->issueForPayment($paymentId, $source, InvoiceService::SYSTEM);
             $this->pdo->prepare("UPDATE fin_gateway_payments SET invoice_state = 'issued', invoice_error = NULL, invoice_attempts = invoice_attempts + 1, updated_at = now() WHERE id = ?")
                 ->execute([$paymentId]);
 
@@ -221,10 +228,21 @@ final class GatewayPaymentService
             $this->pdo->prepare('UPDATE fin_gateway_payments SET invoice_state = ?, invoice_error = ?, invoice_attempts = invoice_attempts + 1, updated_at = now()
                                   WHERE id = ? AND invoice_state <> \'issued\'')
                 ->execute([$state, mb_substr($msg, 0, 500), $paymentId]);
-            error_log("[finance] academy fee invoice {$state} for gateway payment {$paymentId}: {$e->getMessage()}");
+            error_log("[finance] gateway payment invoice {$state} for payment {$paymentId}: {$e->getMessage()}");
 
             return ['state' => $state, 'invoice' => null, 'error' => $e->getMessage()];
         }
+    }
+
+    /** Was this payment for AI tokens rather than an Academy fee? */
+    private function isTokenPurchase(int $paymentId): bool
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT l.purpose FROM fin_gateway_payments p JOIN fin_payment_links l ON l.id = p.link_id WHERE p.id = ?'
+        );
+        $stmt->execute([$paymentId]);
+
+        return $stmt->fetchColumn() === 'tokens';
     }
 
     // ------------------------------------------------------------------ reconcile (refresh from the provider)
