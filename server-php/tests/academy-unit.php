@@ -361,6 +361,97 @@ test('link request: Finance recomputes the GST split (intra / inter-state, SGST 
         PaymentLinkInput::mobile('09876543210'), PaymentLinkInput::mobile('5876543210'), PaymentLinkInput::mobile('+44 7700 900123')], 'mobile numbers');
 });
 
+test('licence order (purpose licences): each line checked against the invoice rules, GSTIN must be in the seller\'s state, a registered buyer needs its address', function (): void {
+    $now  = 1761200000;
+    $line = static fn (array $over = []): array => $over + [
+        'product_code' => 'books', 'offer_code' => 'books-pro', 'offer_version' => 2, 'description' => 'Books Pro — 2 licences', 'quantity' => 2,
+        'unit_price_paise' => 1180000, 'amount_paise' => 2360000, 'price_basis' => 'inclusive', 'gst_rate' => '18', 'sac' => '997331',
+        'taxable_paise' => 2000000, 'cgst_paise' => 180000, 'sgst_paise' => 180000, 'igst_paise' => 0,
+    ];
+    $notes = ['product_code' => 'notes', 'offer_code' => 'notes-plus', 'offer_version' => 1, 'description' => 'Notes Plus — 1 licence', 'quantity' => 1,
+        'unit_price_paise' => 100000, 'amount_paise' => 100000, 'price_basis' => 'exclusive', 'gst_rate' => '18', 'sac' => '997331',
+        'taxable_paise' => 100000, 'cgst_paise' => 9000, 'sgst_paise' => 9000, 'igst_paise' => 0];
+    $base = [
+        'purpose' => 'licences', 'source_ref' => 'SLO-000123', 'seller_code' => 'SLR-000045', 'buyer_gstin' => '27AAPFU0939F1ZV',
+        'payer' => ['name' => 'RK Associates', 'email' => 'Accounts@RK.example.test', 'mobile' => '9876500022', 'state_code' => '27', 'address' => '12 MG Road, Pune', 'pincode' => '411001'],
+        'amount_paise' => 2478000, 'lines' => [$line(), $notes],
+        'fee' => ['taxable_paise' => 2100000, 'cgst_paise' => 189000, 'sgst_paise' => 189000, 'igst_paise' => 0],
+    ];
+    $refused = static function (array $req, string $code, string $what) use ($now): array {
+        try {
+            PaymentLinkInput::validate($req, '27', true, $now);
+            check(false, $what . ': must be refused');
+        } catch (ApiException $e) {
+            same($code, $e->errorCode(), $what);
+
+            return $e->errors();
+        }
+
+        return [];
+    };
+
+    $v = PaymentLinkInput::validate($base, '27', true, $now);
+    same(['licences', 2478000, 2100000, 189000, 189000, 0, null, null, null, 'intra_state', '27AAPFU0939F1ZV', 'SLR-000045', 'licences'],
+        [$v['purpose'], $v['amount_paise'], $v['fee']['taxable_paise'], $v['fee']['cgst_paise'], $v['fee']['sgst_paise'], $v['fee']['igst_paise'], $v['fee']['sac'],
+            $v['cmp_id'], $v['buyer_uuid'], $v['supply_type'], $v['buyer_gstin'], $v['seller_code'], $v['product_code']], 'two lines accepted; totals on the link, no single SAC');
+    same([[1, 'books-pro', 2, 2360000, 2000000, 2360000, '18.00'], [2, 'notes-plus', 1, 100000, 100000, 118000, '18.00']],
+        array_map(static fn (array $l): array => [$l['line_no'], $l['offer_code'], $l['quantity'], $l['amount_paise'], $l['taxable_paise'], $l['total_paise'], $l['gst_rate']], $v['lines']),
+        'each line as the invoice will bill it');
+    same(['Aicountly licences — order SLO-000123', 'accounts@rk.example.test', '+919876500022'], [$v['description'], $v['payer']['email'], $v['payer']['mobile']], 'default description; normalised contact');
+
+    // The GSTIN decides the place of supply on the invoice, so it must be the state the order was priced for.
+    $ka = $base;
+    $ka['payer']['state_code'] = '29';
+    $err = $refused($ka, 'gstin_state_mismatch', 'a Maharashtra GSTIN with a Karnataka state');
+    same(['gstin_state_code' => '27', 'state_code' => '29'], $err, 'both states named');
+
+    // Inter-state seller: IGST per line, and Finance's figures when the split is wrong.
+    $kaSeller = ['buyer_gstin' => '29AAPFU0939F1ZR', 'payer' => ['state_code' => '29'] + $base['payer']] + $base;
+    $err = $refused($kaSeller, 'fee_breakdown_mismatch', 'CGST + SGST claimed for a Karnataka seller');
+    same([['taxable_paise' => 2000000, 'cgst_paise' => 0, 'sgst_paise' => 0, 'igst_paise' => 360000, 'total_paise' => 2360000],
+          ['taxable_paise' => 100000, 'cgst_paise' => 0, 'sgst_paise' => 0, 'igst_paise' => 18000, 'total_paise' => 118000]], $err['expected']['lines'], 'Finance\'s figures, line by line');
+    $kaSeller['lines'] = [$line(['cgst_paise' => 0, 'sgst_paise' => 0, 'igst_paise' => 360000]), ['cgst_paise' => 0, 'sgst_paise' => 0, 'igst_paise' => 18000] + $notes];
+    $kaSeller['fee'] = ['taxable_paise' => 2100000, 'cgst_paise' => 0, 'sgst_paise' => 0, 'igst_paise' => 378000];
+    same(['inter_state', 378000], [($k = PaymentLinkInput::validate($kaSeller, '27', true, $now))['supply_type'], $k['fee']['igst_paise']], 'IGST accepted');
+
+    $wrongTotal = $base;
+    $wrongTotal['amount_paise'] = 2478001;
+    $refused($wrongTotal, 'fee_breakdown_mismatch', 'an amount that is not the lines\' total');
+    $wrongFee = $base;
+    $wrongFee['fee']['taxable_paise'] = 2099999;
+    $refused($wrongFee, 'fee_breakdown_mismatch', 'totals that are not the lines\' totals');
+
+    $noAddress = $base;
+    unset($noAddress['payer']['address']);
+    same(['payer.address'], array_keys($refused($noAddress, 'validation_failed', 'a registered buyer without an address')), 'Rule 46(d)');
+    $unregistered = $noAddress;
+    unset($unregistered['buyer_gstin']);
+    same([null, '27'], [($u = PaymentLinkInput::validate($unregistered, '27', true, $now))['buyer_gstin'], $u['place_of_supply']], 'unregistered below ₹50,000 taxable: no address needed');
+
+    $bad = $base;
+    $bad['payer']['mobile'] = '12345';
+    $bad['lines'][0]['amount_paise'] = 2360001;
+    $bad['lines'][1]['discount_paise'] = 1000;
+    $bad['cmp_id'] = 42;
+    unset($bad['seller_code']);
+    $err = $refused($bad, 'validation_failed', 'several problems at once');
+    foreach (['payer.mobile', 'lines[0].amount_paise', 'lines[1].discount_paise', 'cmp_id', 'seller_code'] as $field) {
+        check(isset($err[$field]), "names {$field}");
+    }
+    $refused(['lines' => []] + $base, 'validation_failed', 'an order without lines');
+
+    // Only Engage raises a licence order's link.
+    same(['purpose'], array_keys((static function () use ($base, $now): array {
+        try {
+            PaymentLinkInput::validate($base, '27', false, $now);
+        } catch (ApiException $e) {
+            return $e->errors();
+        }
+
+        return [];
+    })()), 'the staff form cannot raise one');
+});
+
 test('Finance → Engage event: payment_ref is the raw gateway id, lead_code, provider, amount "11800.00", stable event_id; receipt check', function (): void {
     $link = ['id' => 7, 'link_id' => LINK_ID, 'source_ref' => 'LD-2026-000123', 'academy_ref' => 'EDGE-ADM-0042-F1', 'stream' => 'edge', 'product_code' => 'edge',
         'seller_code' => 'SLR-000001', 'fee_taxable_paise' => 1000000, 'fee_cgst_paise' => 90000, 'fee_sgst_paise' => 90000, 'fee_igst_paise' => 0, 'fee_sac' => '999293',

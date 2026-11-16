@@ -153,9 +153,49 @@ Answer (`201`, AIC envelope `{"success":true,"data":…,"request_id":…}`):
 Errors (`{"success":false,"error":{"code","message","details","retryable"}}`): `400 idempotency_key_required` /
 `bad_request`. `401` / `403` / `429`: the AIC-S2S refusals. `409 idempotency_conflict` (same key, different body),
 `open_link_exists` / `already_paid` (`details.link_id`). `422 validation_failed` (`details` per field),
-`fee_breakdown_mismatch`, `seller_not_configured`. `502 provider_error`: the provider refused or did not answer; the
+`fee_breakdown_mismatch`, `gstin_state_mismatch` (licence orders), `seller_not_configured`. `502 provider_error`: the provider refused or did not answer; the
 link is stored as `failed`, and sending **the same request again** retries without ever creating two links (Finance
 first looks the link up at the provider by its id). `503 gateway_not_configured` / `inbound_not_configured`.
+
+### A seller's licence order (`purpose: licences`, migration `009_licence_purchases`)
+
+Aicountly sellers (Engage's seller programme, seller.aicountly.com) buy licences — one order of one or more plans —
+and apply them to their customers' accounts. Engage asks for the order's link on the same route; only Engage can
+(the staff form refuses the purpose). Contract: engage-aicountly `docs/SELLING_LICENCES.md` §9.
+
+```json
+{ "purpose": "licences", "source_ref": "SLO-000123", "seller_code": "SLR-000045", "buyer_gstin": "27AAPFU0939F1ZV",
+  "description": "Aicountly licences — order SLO-000123",
+  "payer": { "name": "RK Associates", "email": "accounts@rk.example", "mobile": "98765 00022", "state_code": "27",
+             "address": "12 MG Road, Pune", "pincode": "411001" },
+  "amount_paise": 2478000,
+  "lines": [ { "product_code": "books", "offer_code": "books-pro", "offer_version": 2, "description": "Books Pro — 2 licences",
+               "quantity": 2, "unit_price_paise": 1180000, "amount_paise": 2360000, "price_basis": "inclusive",
+               "gst_rate": "18", "sac": "997331",
+               "taxable_paise": 2000000, "cgst_paise": 180000, "sgst_paise": 180000, "igst_paise": 0 }, … ],
+  "fee": { "taxable_paise": 2100000, "cgst_paise": 189000, "sgst_paise": 189000, "igst_paise": 0 },
+  "expire_at": "2026-11-22T04:30:00Z" }
+```
+
+- **Lines.** 1–50 lines; each is `amount_paise` = `unit_price_paise × quantity` on its own basis (the taxable value
+  when exclusive, the gross when inclusive) with its own SAC and rate. Finance recomputes every line with
+  `GstCalculator::line` for the place of supply and refuses any difference with `422 fee_breakdown_mismatch`
+  (`details.expected.lines[]` carries Finance's figures, line by line). `amount_paise` must be the lines' total;
+  `fee`, when sent, the lines' taxable / CGST / SGST / IGST totals. No discount on a line: sellers pay the published
+  price.
+- **Buyer.** The seller's business: `payer.name` is its legal name, `buyer_gstin` its GSTIN when it is registered.
+  A GSTIN must be registered in `payer.state_code` (`422 gstin_state_mismatch`, `details.gstin_state_code` /
+  `state_code`): a registered buyer is supplied at its GSTIN's state, so the link's split must be the invoice's. A
+  registered buyer needs `payer.address` and `pincode` (CGST Rule 46(d)); an unregistered one from ₹50,000 taxable
+  (Rule 46(e)). `payer.mobile` is required (the payment page needs it).
+- **Stored.** `fin_payment_links.lines` (JSONB, immutable with the rest of the demand); `fee_*_paise` and
+  `amount_paise` are the order's totals; `fee_sac` / `fee_gst_rate` / `fee_price_basis` are null (each line has its
+  own). One open and one paid link per order (`source_ref`), like token orders. `GET …/payment-links/{link_id}`
+  answers `lines` and `buyer_gstin` too.
+- **Invoice.** `LicencePurchaseInvoiceSource`: `buyer_kind = reseller` (no `cmp_id`, no `buyer_uuid`), the GSTIN
+  and address when registered, one invoice line per order line (`item_code` = the offer code, `item_kind = licence`,
+  the quantity, the line amount on its basis). It is not in Manage's document reads (no company); the seller sees the
+  invoice number in the seller portal.
 
 ## Finance → Engage: payment events
 
@@ -179,7 +219,8 @@ protection, and Engage's `AicS2sFilter` already serves any client by argument. E
   "event_id":     "fin_evt_01JB…",              // stable across retries (also the Idempotency-Key)
   "event_type":   "payment.succeeded",          // | payment.refunded
   "occurred_at":  "2026-10-26T10:15:00+05:30",
-  "lead_code":    "LD-2026-000123",             // the source_ref Engage sent when it asked for the link
+  "lead_code":    "LD-2026-000123",             // the source_ref Engage sent when it asked for the link (TKO-… / SLO-… for an order)
+  "purpose":      "academy_fee",                // | tokens | licences
   "payment_ref":  "pay_N3xY…",                  // the RAW gateway payment id, exactly as staff type it — Razorpay pay_… (never plink_…);
                                                 //   Cashfree the bare cf_payment_id as a string, e.g. "5114910393"
   "provider":     "razorpay",                   // razorpay | cashfree
@@ -196,9 +237,19 @@ protection, and Engage's `AicS2sFilter` already serves any client by argument. E
   "link_id":      "fin_pl_01JB…",
   "finance_payment_id": "fin_pay_01JB…",
   "fee":    {"taxable_paise": 1000000, "cgst_paise": 90000, "sgst_paise": 90000, "igst_paise": 0, "sac": "999293", "gst_rate": "18.00", "price_basis": "inclusive"},
-  "refund": null                                // payment.refunded: {provider_refund_id, amount, amount_paise, refunded_at, total_refunded_paise, fully_refunded}
+                                                // a licence order: the totals, sac / gst_rate / price_basis null (each line has its own)
+  "refund": null,                               // payment.refunded: {provider_refund_id, amount, amount_paise, refunded_at, total_refunded_paise, fully_refunded}
+  "invoice_no":   "AIC/26-27/000123",           // payment.succeeded, once the invoice is issued (see below)
+  "invoice_date": "2026-10-26",
+  "invoice":      {"document_id": "fin_inv_01JB…", "doc_no": "AIC/26-27/000123", "doc_date": "2026-10-26"}
 }
 ```
+
+`invoice_no`, `invoice_date` and `invoice` are added when the event is **sent**, if the payment's invoice exists by
+then. It normally does: the event is queued in the transaction that verifies the payment, the invoice is issued right
+after, and the cron sends the event later. An event sent before the invoice (or for a payment whose invoice is
+blocked) goes without them; `GET …/payment-links/{link_id}` always answers the invoice number once issued. Engage
+records it on a seller's licence order, which the seller sees in the seller portal.
 
 Engage de-duplicates on `(lead, payment_ref)`. Because `payment_ref` is the dashboard id, a payment that staff
 already confirmed by hand on launch day is not recorded twice. Engage maps the event to

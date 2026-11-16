@@ -105,6 +105,8 @@ export function InvoicesPage() {
             <option value="">All buyers</option>
             <option value="company">Companies (subscriptions)</option>
             <option value="academy_student">Aicountly Academy students</option>
+            <option value="saas_customer">AI token purchases</option>
+            <option value="reseller">Aicountly sellers (licences)</option>
           </select>
         </label>
         <label className="field-inline">
@@ -170,7 +172,7 @@ export function InvoicesPage() {
                       <td>{r.buyer_legal_name}</td>
                       <td className="mono small">{r.buyer_gstin ?? 'B2C'}</td>
                       <td>{r.place_of_supply}</td>
-                      <td className="num">{r.buyer_kind === 'academy_student' ? 'Academy' : r.cmp_id}</td>
+                      <td className="num">{r.buyer_kind === 'academy_student' ? 'Academy' : r.buyer_kind === 'reseller' ? 'Seller' : r.cmp_id}</td>
                       <td className="num">{inrPaise(r.taxable_paise)}</td>
                       <td className="num">{inrPaise(r.tax_paise)}</td>
                       <td className="num">{inrPaise(r.total_paise)}</td>

@@ -314,12 +314,14 @@ final class PaymentLinkService
     {
         return $this->tx(function () use ($v, $conn, $sourceApp, $idempotencyKey, $hash, $status, $actor): int {
             // One open and one paid link per thing being paid for. A course fee is keyed on
-            // its admission reference; a token order has none, so it is keyed on Engage's
-            // order reference. Both are also partial unique indexes, so a race loses there
-            // rather than producing two live links a customer could pay twice.
-            $clashKey = $v['purpose'] === 'tokens' ? 'source_ref' : 'academy_ref';
-            $clashVal = $v['purpose'] === 'tokens' ? $v['source_ref'] : $v['academy_ref'];
-            $what     = $v['purpose'] === 'tokens' ? "order {$clashVal}" : "fee {$clashVal}";
+            // its admission reference; a token order and a seller's licence order have none,
+            // so they are keyed on Engage's order reference. All are also partial unique
+            // indexes, so a race loses there rather than producing two live links a customer
+            // could pay twice.
+            $byOrder  = in_array($v['purpose'], ['tokens', 'licences'], true);
+            $clashKey = $byOrder ? 'source_ref' : 'academy_ref';
+            $clashVal = $byOrder ? $v['source_ref'] : $v['academy_ref'];
+            $what     = $byOrder ? "order {$clashVal}" : "fee {$clashVal}";
             $clash = $this->pdo->prepare("SELECT link_id, status FROM fin_payment_links WHERE {$clashKey} = ? AND purpose = '{$v['purpose']}' AND status IN ('pending_approval','creating','created','partially_paid','paid')
                                            ORDER BY (status = 'paid') DESC LIMIT 1");
             $clash->execute([$clashVal]);
@@ -335,8 +337,8 @@ final class PaymentLinkService
                      idempotency_key, request_sha256, source_ref, academy_ref, stream, product_code, seller_code, description,
                      payer_name, payer_email, payer_mobile, payer_state_code, payer_address, payer_pincode, amount_paise, fee_taxable_paise, fee_cgst_paise,
                      fee_sgst_paise, fee_igst_paise, fee_sac, fee_gst_rate, fee_price_basis, fee_breakdown, seller_state_code, place_of_supply, supply_type,
-                     connection_id, provider, mode, expire_at, notify_sms, notify_email, status, created_by)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, to_timestamp(?), ?, ?, ?, ?) RETURNING id',
+                     connection_id, provider, mode, expire_at, notify_sms, notify_email, status, created_by, lines)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, to_timestamp(?), ?, ?, ?, ?, ?::jsonb) RETURNING id',
             );
             $f = $v['fee'];
             $stmt->execute([
@@ -347,6 +349,7 @@ final class PaymentLinkService
                 json_encode($v['fee_breakdown'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR), $v['seller_state'], $v['place_of_supply'],
                 $v['supply_type'], (int) $conn['id'], $conn['provider'], $conn['mode'], $v['expire_at'], $v['notify_sms'] ? 'true' : 'false',
                 $v['notify_email'] ? 'true' : 'false', $status, $actor['actor'],
+                ($v['lines'] ?? null) === null ? null : json_encode($v['lines'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
             ]);
             $id  = (int) $stmt->fetchColumn();
             $row = $this->row($id);
@@ -421,6 +424,9 @@ final class PaymentLinkService
             'stream'            => $row['stream'],
             'product_code'      => (string) $row['product_code'],
             'seller_code'       => $row['seller_code'],
+            // A seller's licence order: the buyer's GSTIN and the order lines as Finance checked them (null otherwise).
+            'buyer_gstin'       => $row['buyer_gstin'],
+            'lines'             => self::lines($row),
             'fee'               => self::fee($row),
             'created_at'        => self::iso($row['created_at']),
             'paid_at'           => self::iso($row['paid_at']),
@@ -561,6 +567,14 @@ final class PaymentLinkService
 
     // ------------------------------------------------------------------ helpers
 
+    /** @return list<array<string,mixed>>|null the order lines of a licence link, as stored; null for a single-fee link */
+    public static function lines(array $row): ?array
+    {
+        $lines = json_decode((string) ($row['lines'] ?? 'null'), true);
+
+        return is_array($lines) ? array_values($lines) : null;
+    }
+
     public static function fee(array $row): array
     {
         $sent     = json_decode((string) ($row['fee_breakdown'] ?? 'null'), true);
@@ -574,8 +588,10 @@ final class PaymentLinkService
         }
 
         return ['taxable_paise' => (int) $row['fee_taxable_paise'], 'cgst_paise' => (int) $row['fee_cgst_paise'], 'sgst_paise' => (int) $row['fee_sgst_paise'],
-            'igst_paise' => (int) $row['fee_igst_paise'], 'sac' => (string) $row['fee_sac'], 'gst_rate' => (string) $row['fee_gst_rate'],
-            'price_basis' => (string) $row['fee_price_basis'], 'discount' => $discount];
+            // Null on a licence order, whose lines each carry their own (lines()).
+            'igst_paise' => (int) $row['fee_igst_paise'], 'sac' => $row['fee_sac'] === null ? null : (string) $row['fee_sac'],
+            'gst_rate' => $row['fee_gst_rate'] === null ? null : (string) $row['fee_gst_rate'],
+            'price_basis' => $row['fee_price_basis'] === null ? null : (string) $row['fee_price_basis'], 'discount' => $discount];
     }
 
     public static function iso(mixed $ts): ?string

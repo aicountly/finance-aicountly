@@ -212,11 +212,13 @@ final class GatewayPaymentService
         try {
             // Which kind of thing was bought decides how the buyer is described: an Academy
             // student has no company and no GSTIN, a token buyer has both a company and a
-            // licence holder. Both record their payment in fin_gateway_payments, so this is
-            // the one place the two paths part.
-            $source = $this->isTokenPurchase($paymentId)
-                ? new TokenPurchaseInvoiceSource($this->pdo)
-                : new GatewayPaymentInvoiceSource($this->pdo);
+            // licence holder, a seller buying licences is a business with neither. All record
+            // their payment in fin_gateway_payments, so this is the one place the paths part.
+            $source = match ($this->purposeOf($paymentId)) {
+                'tokens'   => new TokenPurchaseInvoiceSource($this->pdo),
+                'licences' => new LicencePurchaseInvoiceSource($this->pdo),
+                default    => new GatewayPaymentInvoiceSource($this->pdo),
+            };
             $inv = $this->invoices()->issueForPayment($paymentId, $source, InvoiceService::SYSTEM);
             $this->pdo->prepare("UPDATE fin_gateway_payments SET invoice_state = 'issued', invoice_error = NULL, invoice_attempts = invoice_attempts + 1, updated_at = now() WHERE id = ?")
                 ->execute([$paymentId]);
@@ -234,15 +236,15 @@ final class GatewayPaymentService
         }
     }
 
-    /** Was this payment for AI tokens rather than an Academy fee? */
-    private function isTokenPurchase(int $paymentId): bool
+    /** What the payment was for: academy_fee, tokens or licences (the link's purpose). */
+    private function purposeOf(int $paymentId): string
     {
         $stmt = $this->pdo->prepare(
             'SELECT l.purpose FROM fin_gateway_payments p JOIN fin_payment_links l ON l.id = p.link_id WHERE p.id = ?'
         );
         $stmt->execute([$paymentId]);
 
-        return $stmt->fetchColumn() === 'tokens';
+        return (string) $stmt->fetchColumn();
     }
 
     // ------------------------------------------------------------------ reconcile (refresh from the provider)

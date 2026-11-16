@@ -53,7 +53,7 @@ export function DocumentView({ doc }: { doc: Invoice | CreditNote }) {
             {intra ? 'Intra-state (CGST + SGST)' : 'Inter-state (IGST)'}
             {'\n'}Reverse charge: {doc.reverse_charge ? 'Yes' : 'No'}
             {'\n'}
-            {doc.buyer_kind === 'academy_student' ? 'Aicountly Academy student (no company)' : `Company (cmp_id): ${doc.cmp_id}`}
+            {buyerKindLabel(doc.buyer_kind, doc.cmp_id)}
           </p>
         </div>
       </div>
@@ -155,4 +155,12 @@ export function RenderingNote({ rendering }: { rendering: { pdf_stored: boolean;
         : 'No PDF service is configured (GOTENBERG_URL): the document is stored as HTML and the PDF becomes available once it is.'}
     </p>
   )
+}
+
+/** Who the document is to, for staff: a company or a token buyer by cmp_id; an Academy student or an Aicountly seller has none. */
+function buyerKindLabel(kind: string, cmpId: number | null): string {
+  if (kind === 'academy_student') return 'Aicountly Academy student (no company)'
+  if (kind === 'reseller') return 'Aicountly seller — licences for resale (no company)'
+  if (kind === 'saas_customer') return `Customer buying AI tokens (cmp_id): ${cmpId}`
+  return `Company (cmp_id): ${cmpId}`
 }

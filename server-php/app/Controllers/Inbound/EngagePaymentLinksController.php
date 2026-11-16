@@ -10,13 +10,16 @@ use App\Services\AcademyFees\PaymentLinkService;
 use App\Support\ApiException;
 
 /**
- * Engage → Finance: Aicountly Academy fee payment links (docs/ACADEMY_PAYMENTS.md § "Engage → Finance"), AIC-S2S v1
- * signed (S2sFilter; client engage, key scope issue; 30 requests / minute per key by default).
+ * Engage → Finance: payment links (docs/ACADEMY_PAYMENTS.md § "Engage → Finance"), AIC-S2S v1 signed (S2sFilter;
+ * client engage, key scope issue; 30 requests / minute per key by default). `purpose` says what is paid for:
+ * academy_fee (a student's fee), tokens (a customer buying AI tokens), licences (an Aicountly seller's licence order:
+ * several lines, the seller invoiced as a business — PaymentLinkInput::validateLicences(), migration 009).
  *
  *   POST v1/inbound/engage/payment-links                 Idempotency-Key header required
  *        201 new link created at the provider · 200 the same request again (duplicate: true)
  *        409 idempotency_conflict / open_link_exists / already_paid · 422 validation_failed / fee_breakdown_mismatch /
- *        seller_not_configured · 502 provider_error (send the same request again) · 503 gateway_not_configured
+ *        gstin_state_mismatch (licences) / seller_not_configured · 502 provider_error (send the same request again) ·
+ *        503 gateway_not_configured
  *   GET  v1/inbound/engage/payment-links/{link_id}       the link, its payments and their invoices
  *   POST v1/inbound/engage/payment-links/{link_id}/cancel   {reason?}
  *

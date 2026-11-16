@@ -330,7 +330,10 @@ the document type says which rows are credit notes.
   thrown after an ops alert so the caller can mark the payment `blocked_config`; bad order data → `422 blocked_data`.
   **Wired for Aicountly Academy fees** (migration `005_academy_fees`, [ACADEMY_PAYMENTS.md](ACADEMY_PAYMENTS.md)):
   `App\Services\AcademyFees\GatewayPaymentInvoiceSource` reads `fin_gateway_payments`, and the buyer is an
-  `academy_student` (`fin_invoices.buyer_kind`; `cmp_id` NULL, no GSTIN — company rows keep `cmp_id` required). A
+  `academy_student` (`fin_invoices.buyer_kind`; `cmp_id` NULL, no GSTIN — company rows keep `cmp_id` required).
+  Token purchases (migration 008) invoice a `saas_customer` (`cmp_id` and `buyer_uuid` required); a seller's licence
+  order (migration 009, `LicencePurchaseInvoiceSource`) invoices a `reseller`: an Aicountly seller's business, with
+  its GSTIN and address when registered, no `cmp_id`, no `buyer_uuid`, one line per plan bought. A
   future SaaS checkout should record its gateway payments in the same `fin_gateway_payments` table; the
   `fin_invoices.payment_id` foreign key is still not added (the test fixtures use synthetic payment ids).
 - Refund-driven credit notes will reuse `CreditNoteService`'s issue path.
