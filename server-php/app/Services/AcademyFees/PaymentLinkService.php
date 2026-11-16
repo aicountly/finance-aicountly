@@ -279,7 +279,7 @@ final class PaymentLinkService
                 'notify_email' => (bool) $row['notify_email'],
                 'notes'        => array_filter(['fin_link_id' => (string) $row['link_id'], 'academy_ref' => (string) $row['academy_ref'], 'stream' => (string) $row['stream'],
                     'source_ref' => (string) ($row['source_ref'] ?? '')], static fn (string $v) => $v !== ''),
-                'return_url'   => self::httpsUrl(finance_env('FINANCE_ACADEMY_RETURN_URL')),
+                'return_url'   => self::returnUrl((string) ($row['purpose'] ?? 'academy_fee')),
                 'notify_url'   => $row['provider'] === 'cashfree' && ($b = self::httpsUrl(finance_env('BASE_URL'))) !== null ? rtrim($b, '/') . '/v1/webhooks/cashfree' : null,
             ]);
         } catch (GatewayException $e) {
@@ -566,6 +566,21 @@ final class PaymentLinkService
     }
 
     // ------------------------------------------------------------------ helpers
+
+    /**
+     * Where the payer lands after paying, by what they paid for (https only; null = the provider's own page):
+     * an Academy fee → FINANCE_ACADEMY_RETURN_URL, AI credits → FINANCE_TOKENS_RETURN_URL (Manage's Plans & billing),
+     * a seller's licence order → FINANCE_LICENCES_RETURN_URL (the seller portal). Never another flow's page: a customer
+     * who bought credits must not be sent to the Academy.
+     */
+    public static function returnUrl(string $purpose): ?string
+    {
+        return self::httpsUrl(finance_env(match ($purpose) {
+            'tokens'   => 'FINANCE_TOKENS_RETURN_URL',
+            'licences' => 'FINANCE_LICENCES_RETURN_URL',
+            default    => 'FINANCE_ACADEMY_RETURN_URL',
+        }));
+    }
 
     /** @return list<array<string,mixed>>|null the order lines of a licence link, as stored; null for a single-fee link */
     public static function lines(array $row): ?array

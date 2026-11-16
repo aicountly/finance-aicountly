@@ -15,6 +15,7 @@ use App\Services\AcademyFees\EventScrubber;
 use App\Services\AcademyFees\GatewayException;
 use App\Services\AcademyFees\GatewayHttp;
 use App\Services\AcademyFees\PaymentLinkInput;
+use App\Services\AcademyFees\PaymentLinkService;
 use App\Services\AcademyFees\RazorpayAdapter;
 use App\Support\ApiException;
 
@@ -450,6 +451,29 @@ test('licence order (purpose licences): each line checked against the invoice ru
 
         return [];
     })()), 'the staff form cannot raise one');
+});
+
+test('after paying, the payer lands on the page of what they paid for — never another flow\'s (credits must not land on the Academy)', function (): void {
+    $keys = ['FINANCE_ACADEMY_RETURN_URL', 'FINANCE_TOKENS_RETURN_URL', 'FINANCE_LICENCES_RETURN_URL'];
+    $saved = array_map(static fn (string $k) => $_ENV[$k] ?? null, array_combine($keys, $keys));
+    try {
+        $_ENV['FINANCE_ACADEMY_RETURN_URL']  = 'https://aicountly.com/academy/thank-you';
+        $_ENV['FINANCE_TOKENS_RETURN_URL']   = 'https://manage.aicountly.com/#/billing';
+        $_ENV['FINANCE_LICENCES_RETURN_URL'] = 'http://seller.aicountly.com/licence-orders';
+        same(['https://aicountly.com/academy/thank-you', 'https://manage.aicountly.com/#/billing', null],
+            [PaymentLinkService::returnUrl('academy_fee'), PaymentLinkService::returnUrl('tokens'), PaymentLinkService::returnUrl('licences')],
+            'each purpose its own page; plain http refused');
+        $_ENV['FINANCE_TOKENS_RETURN_URL'] = '';
+        same(null, PaymentLinkService::returnUrl('tokens'), 'unset: the provider\'s own page, not the Academy');
+    } finally {
+        foreach ($saved as $k => $v) {
+            if ($v === null) {
+                unset($_ENV[$k]);
+            } else {
+                $_ENV[$k] = $v;
+            }
+        }
+    }
 });
 
 test('Finance → Engage event: payment_ref is the raw gateway id, lead_code, provider, amount "11800.00", stable event_id; receipt check', function (): void {
