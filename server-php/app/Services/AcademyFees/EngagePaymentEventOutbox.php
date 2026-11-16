@@ -8,15 +8,17 @@ use App\Support\Money;
 use App\Support\Ulid;
 
 /**
- * Finance → Engage payment events for Academy fee links (table fin_engage_payment_events), AIC-S2S v1 signed:
+ * Finance → Engage payment events for the links Engage asked for — Academy fees, AI tokens, sellers' licence orders
+ * (table fin_engage_payment_events), AIC-S2S v1 signed:
  *
  *   POST {ENGAGE_API_BASE_URL}/v1/inbound/finance/payment-events
  *   X-AIC-Client: finance · X-AIC-Key-Id: {FINANCE_OUTBOUND_ENGAGE_S2S_KEY_ID} · X-AIC-Environment: {FINANCE_S2S_ENVIRONMENT}
  *   X-AIC-Signature: v1=HMAC-SHA256({FINANCE_OUTBOUND_ENGAGE_S2S_SECRET}, canonical)   (Engage: filter aic-s2s:finance, issue key)
  *   Idempotency-Key: {event_id}
- *   {event_id, event_type: payment.succeeded | payment.refunded, occurred_at, lead_code, payment_ref, provider, product_code,
- *    amount, amount_paise, currency, paid_at, method, mode, stream, academy_ref, seller_code, link_id, finance_payment_id,
- *    fee{…}, refund|null}   (no payer data: Engage already has the lead; see payload())
+ *   {event_id, event_type: payment.succeeded | payment.refunded, occurred_at, lead_code, purpose, payment_ref, provider,
+ *    product_code, amount, amount_paise, currency, paid_at, method, mode, stream, academy_ref, seller_code, link_id,
+ *    finance_payment_id, fee{…}, refund|null, + invoice_no / invoice_date / invoice{…} once issued (withInvoice())}
+ *   (no payer data: Engage already has the lead or the order; see payload())
  *
  * Events are written in the transaction that verifies the payment (or refund), so one is never lost or sent for a
  * change that rolled back. bin/academy-fees-cron.php delivers them: delivered only on 2xx with Engage's receipt
@@ -115,6 +117,8 @@ final class EngagePaymentEventOutbox
             'event_type'         => $type,
             'occurred_at'        => self::iso($refund['refunded_at'] ?? $payment['paid_at']),
             'lead_code'          => $link['source_ref'],
+            // What was bought: academy_fee, tokens or licences (a seller's licence order, lead_code its SLO-… reference).
+            'purpose'            => (string) ($link['purpose'] ?? 'academy_fee'),
             'payment_ref'        => (string) $payment['gateway_payment_ref'],
             'provider'           => (string) $payment['provider'],
             'product_code'       => (string) $link['product_code'],
@@ -131,8 +135,10 @@ final class EngagePaymentEventOutbox
             'finance_payment_id' => (string) $payment['payment_ref'],
             'fee'                => [
                 'taxable_paise' => (int) $link['fee_taxable_paise'], 'cgst_paise' => (int) $link['fee_cgst_paise'], 'sgst_paise' => (int) $link['fee_sgst_paise'],
-                'igst_paise' => (int) $link['fee_igst_paise'], 'sac' => (string) $link['fee_sac'], 'gst_rate' => (string) $link['fee_gst_rate'],
-                'price_basis' => (string) $link['fee_price_basis'],
+                // A licence order has no single SAC / rate / basis (each line has its own): null there.
+                'igst_paise' => (int) $link['fee_igst_paise'], 'sac' => $link['fee_sac'] === null ? null : (string) $link['fee_sac'],
+                'gst_rate' => $link['fee_gst_rate'] === null ? null : (string) $link['fee_gst_rate'],
+                'price_basis' => $link['fee_price_basis'] === null ? null : (string) $link['fee_price_basis'],
             ],
             'refund'             => $refund === null ? null : [
                 'provider_refund_id'   => (string) $refund['provider_refund_id'],
@@ -166,7 +172,7 @@ final class EngagePaymentEventOutbox
             }
             foreach ($batch as $row) {
                 $summary['attempted']++;
-                $body    = (string) $row['payload'];
+                $body    = $this->withInvoice((string) $row['payload'], $row);
                 $headers = ['Content-Type' => 'application/json', 'Accept' => 'application/json', 'Idempotency-Key' => (string) $row['event_id']]
                     + AicS2s::sign($secret, 'finance', $keyId, $env, 'POST', self::PATH, '', $body);
                 $res      = ($this->post)($base . self::PATH, $headers, $body);
@@ -216,13 +222,44 @@ final class EngagePaymentEventOutbox
                  ORDER BY o.id
                  LIMIT ?
                  FOR UPDATE SKIP LOCKED)
-            RETURNING id, event_id, payload::text AS payload, attempts
+            RETURNING id, event_id, event_type, gateway_payment_id, payload::text AS payload, attempts
         SQL);
         $stmt->execute([$n]);
         $rows = $stmt->fetchAll();
         usort($rows, static fn (array $a, array $b) => (int) $a['id'] <=> (int) $b['id']);
 
         return $rows;
+    }
+
+    /**
+     * A payment.succeeded event gains the invoice the payment produced when Finance has issued it by the time the
+     * event is sent — normally so: the event is queued when the payment is verified, the invoice is issued right after,
+     * and the cron sends the event. Engage records the invoice number on the order (a seller's licence order shows it);
+     * an event sent before the invoice exists goes without it. Additive: invoice_no, invoice_date, invoice{document_id,
+     * doc_no, doc_date}.
+     *
+     * @param array<string,mixed> $row a claimed event row
+     */
+    private function withInvoice(string $body, array $row): string
+    {
+        if (($row['event_type'] ?? '') !== 'payment.succeeded' || empty($row['gateway_payment_id'])) {
+            return $body;
+        }
+        $payload = json_decode($body, true);
+        if (!is_array($payload) || isset($payload['invoice_no'])) {
+            return $body;
+        }
+        $stmt = $this->pdo->prepare('SELECT document_id, doc_no, doc_date FROM fin_invoices WHERE payment_id = ? ORDER BY id LIMIT 1');
+        $stmt->execute([(int) $row['gateway_payment_id']]);
+        $inv = $stmt->fetch();
+        if (!$inv) {
+            return $body;
+        }
+        $payload['invoice_no']   = (string) $inv['doc_no'];
+        $payload['invoice_date'] = (string) $inv['doc_date'];
+        $payload['invoice']      = ['document_id' => (string) $inv['document_id'], 'doc_no' => (string) $inv['doc_no'], 'doc_date' => (string) $inv['doc_date']];
+
+        return json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
     }
 
     public function requeue(int $id): bool

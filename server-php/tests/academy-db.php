@@ -773,3 +773,104 @@ test('Engage creates a TOKEN purchase link: the buyer needs a company and a hold
     same(201, engage('POST', '', feeRequest('EDGE-ADM-TOKENS-COEXIST'), ['idem' => 'fee-after-tokens'])['status'],
         'the Academy flow is untouched');
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// An Aicountly seller buys licences (migration 009; engage-aicountly docs/SELLING_LICENCES.md §9): one order of
+// several plans, every line checked against the invoice rules; the GST invoice goes to the seller's business with its
+// GSTIN, line by line; the event tells Engage which order was paid and with which invoice.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** A Maharashtra seller (GSTIN 27…): 2 × Books Pro at ₹11,800 incl. 18% GST, and 1 × Notes Plus at ₹1,000 + 18%. */
+function licenceRequest(string $orderRef, array $extra = []): array
+{
+    return $extra + [
+        'purpose'      => 'licences',
+        'source_ref'   => $orderRef,
+        'seller_code'  => 'SLR-000045',
+        'buyer_gstin'  => '27AAPFU0939F1ZV',
+        'description'  => 'Aicountly licences — order ' . $orderRef,
+        'payer'        => ['name' => 'RK Associates', 'email' => 'accounts@rk.example.test', 'mobile' => '9876500022', 'state_code' => '27',
+            'address' => '12 MG Road, Pune', 'pincode' => '411001'],
+        'amount_paise' => 2478000,
+        'lines'        => [
+            ['product_code' => 'books', 'offer_code' => 'books-pro', 'offer_version' => 2, 'description' => 'Books Pro — 2 licences', 'quantity' => 2,
+                'unit_price_paise' => 1180000, 'amount_paise' => 2360000, 'price_basis' => 'inclusive', 'gst_rate' => '18', 'sac' => '997331',
+                'taxable_paise' => 2000000, 'cgst_paise' => 180000, 'sgst_paise' => 180000, 'igst_paise' => 0],
+            ['product_code' => 'notes', 'offer_code' => 'notes-plus', 'offer_version' => 1, 'description' => 'Notes Plus — 1 licence', 'quantity' => 1,
+                'unit_price_paise' => 100000, 'amount_paise' => 100000, 'price_basis' => 'exclusive', 'gst_rate' => '18', 'sac' => '997331',
+                'taxable_paise' => 100000, 'cgst_paise' => 9000, 'sgst_paise' => 9000, 'igst_paise' => 0],
+        ],
+        'fee'          => ['taxable_paise' => 2100000, 'cgst_paise' => 189000, 'sgst_paise' => 189000, 'igst_paise' => 0],
+        'expire_at'    => gmdate('c', time() + 7 * 86400),
+    ];
+}
+
+test('a seller\'s LICENCE order: lines checked, GSTIN state checked, one open link per order; paid → invoice to the seller (reseller, GSTIN, a line per plan); the event carries the invoice', function () use ($pdo, $engageState): void {
+    $mismatch = licenceRequest('SLO-000901', ['payer' => ['state_code' => '29'] + licenceRequest('x')['payer']]);
+    $r = engage('POST', '', $mismatch, ['idem' => 'slo-901-state']);
+    same([422, 'gstin_state_mismatch'], [$r['status'], $r['json']['error']['code'] ?? null], 'a Maharashtra GSTIN with a Karnataka state is refused');
+    $wrong = licenceRequest('SLO-000901');
+    $wrong['lines'][1]['igst_paise'] = 18000;
+    $wrong['lines'][1]['cgst_paise'] = 0;
+    $wrong['lines'][1]['sgst_paise'] = 0;
+    $r = engage('POST', '', $wrong, ['idem' => 'slo-901-split']);
+    same([422, 'fee_breakdown_mismatch', 9000], [$r['status'], $r['json']['error']['code'] ?? null, $r['json']['error']['details']['expected']['lines'][1]['cgst_paise'] ?? null],
+        'a wrong split on one line is refused with Finance\'s figures for it');
+
+    $c = engage('POST', '', licenceRequest('SLO-000901'), ['idem' => 'slo-order-901']);
+    same(201, $c['status'], 'created: ' . $c['body']);
+    $d = $c['json']['data'];
+    same(['licences', 2478000, 'SLR-000045', '27AAPFU0939F1ZV', null, null, 2, null],
+        [$d['purpose'], $d['amount_paise'], $d['seller_code'], $d['buyer_gstin'], $d['cmp_id'], $d['token_count'], count($d['lines'] ?? []), $d['fee']['sac']],
+        'Engage sees the order link with its lines; no single SAC');
+    $row = $pdo->query("SELECT * FROM fin_payment_links WHERE source_ref = 'SLO-000901'")->fetch();
+    same([2100000, 189000, 189000, 0, 2478000, null, 2], [(int) $row['fee_taxable_paise'], (int) $row['fee_cgst_paise'], (int) $row['fee_sgst_paise'],
+        (int) $row['fee_igst_paise'], (int) $row['amount_paise'], $row['fee_sac'], count(json_decode((string) $row['lines'], true))], 'totals on the link, the lines kept');
+    same([200, true], [($again = engage('POST', '', licenceRequest('SLO-000901'), ['idem' => 'slo-order-901']))['status'], $again['json']['data']['duplicate'] ?? null],
+        'the same request again: the same link');
+    same([409, 'open_link_exists'], [($two = engage('POST', '', licenceRequest('SLO-000901'), ['idem' => 'slo-901-b']))['status'], $two['json']['error']['code'] ?? null],
+        'one open link per order');
+    try {
+        $pdo->exec("UPDATE fin_payment_links SET lines = '[]'::jsonb WHERE source_ref = 'SLO-000901'");
+        check(false, 'the lines of a link cannot change');
+    } catch (\PDOException $e) {
+        check(str_contains($e->getMessage(), 'never change') || str_contains($e->getMessage(), 'fin_payment_links_lines_chk'), 'the lines are part of the immutable demand');
+    }
+
+    // The seller pays on the provider's page.
+    $paid = gw('razorpay/pay', ['plink_id' => $row['provider_link_id'], 'method' => 'netbanking']);
+    $ok = rzpHook(rzpPaidEvent($paid['link'], $paid['payment']), RZP_HOOK_SECRET, 'evt_SLO901');
+    same([200, 'processed'], [$ok['status'], $ok['json']['outcome'] ?? null], 'processed: ' . $ok['body']);
+    $p = paymentsOf((int) $row['id'])[0];
+    same(['verified', 'issued', 2478000], [$p['verification_status'], $p['invoice_state'], (int) $p['amount_paise']], 'verified and invoiced: ' . (string) $p['invoice_error']);
+
+    $inv = $pdo->query("SELECT * FROM fin_invoices WHERE source_ref = 'payment:{$p['id']}'")->fetch();
+    same(['reseller', null, null, '27AAPFU0939F1ZV', 'RK Associates', '27', 'intra_state', 2100000, 189000, 189000, 0, 2478000, '12 MG Road, Pune', '411001'],
+        [$inv['buyer_kind'], $inv['cmp_id'], $inv['buyer_uuid'], $inv['buyer_gstin'], $inv['buyer_legal_name'], $inv['place_of_supply'], $inv['supply_type'],
+            (int) $inv['taxable_paise'], (int) $inv['cgst_paise'], (int) $inv['sgst_paise'], (int) $inv['igst_paise'], (int) $inv['total_paise'],
+            $inv['buyer_address'], $inv['buyer_pincode']], 'a B2B tax invoice to the seller\'s business: GSTIN, address, CGST + SGST');
+    $lines = $pdo->query("SELECT item_code, item_kind, quantity, amount_paise, taxable_paise, total_paise, price_basis FROM fin_invoice_lines WHERE invoice_id = {$inv['id']} ORDER BY line_no")->fetchAll();
+    same([['books-pro', 'licence', 2, 2360000, 2000000, 2360000, 'inclusive'], ['notes-plus', 'licence', 1, 100000, 100000, 118000, 'exclusive']],
+        array_map(static fn (array $l): array => [$l['item_code'], $l['item_kind'], (int) $l['quantity'], (int) $l['amount_paise'], (int) $l['taxable_paise'], (int) $l['total_paise'],
+            $l['price_basis']], $lines), 'one invoice line per plan, with its quantity');
+
+    $ev = $pdo->query("SELECT * FROM fin_engage_payment_events WHERE link_id = {$row['id']}")->fetch();
+    $body = json_decode((string) $ev['payload'], true);
+    same(['payment.succeeded', 'SLO-000901', 'licences', 2478000, 'SLR-000045', null], [$body['event_type'], $body['lead_code'], $body['purpose'], $body['amount_paise'],
+        $body['seller_code'], $body['fee']['sac']], 'payment.succeeded queued for the order');
+    check(!isset($body['invoice_no']), 'queued before the invoice existed');
+
+    // Sent with the invoice, which exists by the time the cron delivers.
+    file_put_contents($engageState, '{}');
+    $pdo->exec("UPDATE fin_engage_payment_events SET next_attempt_at = now() WHERE status = 'pending'");
+    check(str_contains(academyCron(), 'delivered='), 'the cron delivered');
+    $sent = array_values(array_filter(engageEvents(), static fn (array $e): bool => ($e['body']['lead_code'] ?? null) === 'SLO-000901'));
+    same([1, $inv['doc_no'], (string) $inv['doc_date'], $inv['document_id']], [count($sent), $sent[0]['body']['invoice_no'] ?? null, $sent[0]['body']['invoice_date'] ?? null,
+        $sent[0]['body']['invoice']['document_id'] ?? null], 'Engage is told the invoice number and date');
+    same('delivered', $pdo->query("SELECT status FROM fin_engage_payment_events WHERE link_id = {$row['id']}")->fetchColumn(), 'delivered');
+
+    $g = engage('GET', $d['link_id'])['json']['data'];
+    same(['paid', $inv['doc_no']], [$g['status'], $g['payments'][0]['invoice']['doc_no'] ?? null], 'Engage sees the order paid, with its invoice');
+    same([409, 'already_paid'], [($after = engage('POST', '', licenceRequest('SLO-000901'), ['idem' => 'slo-901-c']))['status'], $after['json']['error']['code'] ?? null],
+        'a paid order cannot be asked for again');
+});

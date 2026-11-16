@@ -17,7 +17,8 @@ use App\Support\FiscalYear;
  * Staff: the invoice register and documents (Finance roles; customers never sign in to Finance).
  *
  *   GET  v1/invoices?fy=&doc_type=&status=&cmp_id=&buyer_kind=&q=&page=   view   register (invoices + issued credit notes);
- *        buyer_kind = company | academy_student (Aicountly Academy fees)
+ *        buyer_kind = company | academy_student (Aicountly Academy fees) | saas_customer (AI tokens) |
+ *                     reseller (an Aicountly seller buying licences)
  *   GET  v1/invoices/export?…                                  edit      GSTR-1 friendly CSV (audited)
  *   GET  v1/invoices/{id}                                      view      invoice detail (+ credit notes)
  *   GET  v1/invoices/{id}/pdf                                  view      the PDF stored at issue (audited)
@@ -91,8 +92,8 @@ class InvoiceController extends BaseController
             throw ApiException::validation('cmp_id must be a positive integer.', ['cmp_id' => 'Invalid.']);
         }
         $kind = $this->query('buyer_kind') ?: null;
-        if ($kind !== null && !in_array($kind, ['company', 'academy_student'], true)) {
-            throw ApiException::validation('buyer_kind must be company or academy_student.', ['buyer_kind' => 'Invalid.']);
+        if ($kind !== null && !in_array($kind, ['company', 'academy_student', 'saas_customer', 'reseller'], true)) {
+            throw ApiException::validation('buyer_kind must be company, academy_student, saas_customer or reseller.', ['buyer_kind' => 'Invalid.']);
         }
         $q = $this->query('q') ?: null;
 
