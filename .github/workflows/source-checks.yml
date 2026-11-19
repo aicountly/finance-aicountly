@@ -1,0 +1,62 @@
+name: Source checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate workflows, dependency manifests, and changed source
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          from pathlib import Path
+
+          def git(*args):
+              return subprocess.check_output(['git', *args])
+
+          event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
+          head = 'HEAD'
+          if 'pull_request' in event:
+              base = event['pull_request']['base']['sha']
+          else:
+              base = event.get('before', '')
+              if not base or set(base) == {'0'}:
+                  branch = event['repository']['default_branch']
+                  point = subprocess.run(['git', 'merge-base', 'HEAD', 'refs/remotes/origin/' + branch], capture_output=True)
+                  base = point.stdout.decode().strip() if point.returncode == 0 else ''
+          if base and subprocess.run(['git','cat-file','-e',base+'^{commit}'],capture_output=True).returncode == 0:
+              selected = git('diff','--name-only','-z','--diff-filter=ACMRT',base,head)
+          else:
+              selected = git('ls-files','-z')
+          changed = {os.fsdecode(p) for p in selected.split(b'\0') if p}
+          tracked = [os.fsdecode(p) for p in git('ls-files','-z').split(b'\0') if p]
+          checked = 0
+          for name in tracked:
+              path = Path(name)
+              if any(p in {'vendor','node_modules','.next','dist','build'} for p in path.parts) or not path.is_file() or path.resolve() != path.absolute():
+                  continue
+              if name.startswith('.github/workflows/') and path.suffix in {'.yml','.yaml'}:
+                  subprocess.run(['ruby','-rpsych','-e','Psych.parse_file(ARGV.fetch(0))','--',name],check=True)
+              elif path.name in {'package.json','package-lock.json','composer.json','composer.lock'}:
+                  with path.open(encoding='utf-8') as source:
+                      json.load(source)
+              elif name in changed and path.suffix in {'.php','.sh','.bash','.mjs','.cjs'}:
+                  tool = {'php':['php','-n','-l'], 'sh':['bash','-n'], 'bash':['bash','-n'], 'mjs':['node','--check'], 'cjs':['node','--check']}[path.suffix[1:]]
+                  subprocess.run(tool+[str(path.absolute())],check=True,stdout=subprocess.DEVNULL)
+              else:
+                  continue
+              checked += 1
+          print(f'Validated {checked} tracked files')
+          PY
